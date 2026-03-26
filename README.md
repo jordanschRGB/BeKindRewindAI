@@ -14,47 +14,89 @@ Speech recognition (Whisper) can transcribe the audio, but VHS audio is degraded
 
 ## The Approach
 
-Before recording, the Archivist (a local AI assistant) asks: *"What kind of tapes are we working with?"*
+The user says what's on their tapes. The system generates a vocabulary list — `Om Namah Shivaya, satsang, kirtan, Anandamayi` — and injects it into Whisper's decoder. Transcription accuracy jumps because Whisper now expects those words.
 
-The user says: *"Kirtan recordings from our ashram."*
+After capture, a labeling pass generates a title: `tape_003.mp4` becomes `Kirtan with Anandamayi — Om Namah Shivaya (1994).mp4`.
 
-Behind the scenes, this generates a vocabulary list — `Om Namah Shivaya, satsang, kirtan, Anandamayi` — that gets injected into Whisper's decoder. Transcription accuracy jumps because Whisper now expects those words.
+Then a review pass — the Dreamer — quietly checks the transcript against known vocabulary, flagging anything that looks like a speech recognition mishear. Corrections are applied deterministically, not generated.
 
-After capture, a second pass generates a title: `tape_003.mp4` becomes `Kirtan with Anandamayi — Om Namah Shivaya (1994).mp4`.
-
-The user has a conversation. The system optimizes a speech recognition pipeline.
+The system gets smarter with each tape. Vocabulary accumulates in a plain `.md` file. Tape 20 has dramatically better transcription than tape 1 — same model, richer input.
 
 ---
 
-## Three Agents, One Model
+## Why Multi-Agent Pipelines Usually Get Worse
 
-The system uses one model (Qwen 3.5 4B, ~2.5GB) called three times with different prompts and isolated context:
+Everyone knows how agents work. Nobody talks about why chaining them usually produces worse output than a single call.
 
-| Agent | Job | Sees |
-|-------|-----|------|
-| **Archivist** | Talks to user, drives pipeline | Conversation + memory |
-| **Worker** | Generates vocabulary lists and labels | Skill briefing + transcript only |
-| **Scorer** | Rates output quality 1-10 | Output + transcript only |
+Every pass through a model is a lossy compression. Detail is lost. Output trends toward generic. "Anandamayi Ma leading kirtan at the Ashland ashram in 1994" becomes "Spiritual Chanting Session" after enough passes. The specific details — the name, the place, the year — compress away first because they're the least common tokens.
 
-The Scorer doesn't say "try harder." It says: *"Your label 'Unknown Audio' forced the user to listen to the whole tape again and rename it themselves. That took 45 minutes."*
+This is why "AI improves AI output" pipelines degrade. Each step inherits and amplifies the previous step's errors. A correction agent that rewrites a transcript can only compress — it can't add information it doesn't have. It confidently "fixes" correct words into wrong ones.
 
-One concrete consequence adjusts the next output more reliably than a paragraph of instructions. Too much breaks small models — they collapse into apologizing. One statement is the right calibration.
+**The rule this project follows: every agent step must convert information from one type to another. If input and output are the same type, the step can only compress toward the mean. Delete it.**
 
-### Why Task Delegation Matters
+The one exception: a validator that outputs a binary signal (good/bad) or doubt signals (the Dreamer pattern). That's a useful compression — from a full document to a flag. It can't make things worse because it doesn't change anything.
 
-Asking a single model to do everything — chat with the user, transcribe, label, and judge its own output — produces worse results than splitting those into isolated roles. Not because the model can't do all four, but because:
+## What an Agent Actually Is
 
-- **Context bleed:** The model's labeling is influenced by the conversation tone. Isolated context prevents this.
-- **Self-evaluation fails:** Models don't reliably judge their own output. A separate scoring call with fresh context catches errors the generator missed.
-- **Skill briefings work:** The Worker reads a reference document about how Whisper vocabulary priming works before generating vocabulary. This is like handing an employee a procedures manual — it improves output without changing the model.
+An agent is: **model + identity + context + tools.**
 
-Each delegation has a purpose. If splitting a task doesn't improve the outcome, don't split it.
+Everything else is plumbing. Same model, same weights — different identity and context produce fundamentally different behavior. This project uses one model (Qwen 3.5 4B) in three roles:
+
+| Agent | Identity | Context | Tools | Output type |
+|-------|----------|---------|-------|-------------|
+| **Archivist** | Warm, transparent, drives pipeline | Conversation + memory | All six | Decisions + user-facing text |
+| **Worker** | Structured output only | Skill briefing + transcript | None (output IS the result) | Vocabulary lists, title/tags JSON |
+| **Dreamer** | Reflective, low-confidence, noticing | Transcript + known vocabulary | One: log observation | Doubt signals |
+
+### Why Three Roles Instead of One
+
+Not because the model can't do all three. Because **context isolation prevents bleed.** The Archivist's warm tone shouldn't influence vocabulary generation. The Dreamer's doubt mode shouldn't affect labeling confidence. Separate calls with separate system prompts produce measurably different outputs — we tested this.
+
+The Dreamer caught 3/3 mangled Sanskrit terms in testing. The same model with a task-oriented prompt ("check for errors") caught 2/3. A generic prompt ("review this") wrote an essay instead of JSON. The identity in the prompt steers the output distribution. It's not vibes — it's mechanical.
+
+### The Design Rule
+
+Every agent delegation must be a **conversion of information from one type to another.** If input and output are the same type, the model can only compress — it trends toward generic, losing the specific details that matter.
+
+| Step | In | Out | Type change? | Justified? |
+|------|-----|------|-------------|------------|
+| Vocabulary | Natural language | Decoder token list | Yes — expansion from seed | Yes |
+| Whisper | Audio waveform | Text | Yes — modality change | Yes |
+| Labeling | Paragraphs of transcript | Title + tags | Yes — compression to summary | Yes |
+| Dreamer | Transcript + vocabulary | Doubt signals | Yes — cross-reference check | Yes |
+| Correction agent | Text → "better" text | Same type | No | **No — this degrades quality** |
+
+If you're asking a model to improve its own output in the same format, stop. That compresses toward the mean. Use a validator (pass/fail) or a different-mode reviewer (the Dreamer), not a corrector.
 
 ### Memory
 
-The Archivist maintains a plain `.md` file at `~/.memoryvault/archivist_memory.md`. It stores vocabulary that worked, user preferences, and session history. The user can open it in Notepad and read or edit anything the Archivist remembers.
+`~/.memoryvault/archivist_memory.md` — plain markdown. Stores vocabulary that worked, user preferences, confirmed corrections, session history. The user can open it in Notepad.
 
-No database. No vector store. Full transparency.
+The memory loop: each tape's vocabulary feeds the next tape's Whisper priming. The system improves at the input, not by patching outputs.
+
+---
+
+## The Pipeline
+
+```
+Record tape (ffmpeg, no AI)
+       ↓
+Validate recording (gigabytes → yes/no)
+       ↓
+Transcribe (Whisper, primed with MEMORY.md vocabulary)
+       ↓
+Dreamer reviews (transcript + vocabulary → doubt signals)
+       ↓
+Archivist applies corrections (only where doubt + memory align, deterministic)
+       ↓
+Label (transcript → title + tags)
+       ↓
+Save metadata. Update MEMORY.md with new vocabulary.
+       ↓
+Next tape (now with richer vocabulary).
+```
+
+Harness controls flow. Model fills in blanks. No step refines another step's output. Memory accumulates at the edges.
 
 ---
 
@@ -65,86 +107,64 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Browser opens to `http://localhost:5000`. Click **Chat** to talk to the Archivist.
+Browser opens to `http://localhost:5000`.
 
 **AI features** require an OpenAI-compatible endpoint (LM Studio, Ollama, or OpenRouter). Configure in **Settings**.
 
 **Pre-built binary:** `bash build.sh` produces a 32MB `.exe`.
 
----
-
-## How It Works
-
-```
-User → Archivist (chat) → Worker (vocabulary) → Whisper (primed)
-                                                       ↓
-                                                  transcript
-                                                       ↓
-                                              Worker (label) → Scorer (rate)
-                                                                    ↓
-                                                              score < 7? retry
-                                                              score ≥ 7? save
-```
-
-The agent loop is powered by [smolagents](https://github.com/huggingface/smolagents) — the model decides which tools to call. Ten registered tools handle device detection, capture, encoding, transcription, labeling, scoring, and memory.
+**CLI mode:** `python harness/runner.py` for the direct pipeline without the web UI.
 
 ---
 
 ## Tech Stack & Credits
 
-| Component | Project | Role |
-|-----------|---------|------|
-| Agent framework | [smolagents](https://github.com/huggingface/smolagents) (HuggingFace, Apache 2.0) | Tool-calling agent loop, logging, step tracking |
-| Speech recognition | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (SYSTRAN, MIT) | Local ASR via CTranslate2, CUDA-accelerated |
-| LLM inference | [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) (MIT) | Offline GGUF model loading |
-| LLM model | [Qwen 3.5 4B](https://huggingface.co/Qwen/Qwen3.5-4B) (Qwen Team, Apache 2.0) | Conversation, labeling, scoring |
-| Video capture | [ffmpeg](https://ffmpeg.org/) (LGPL/GPL) | Capture, encode, audio extraction |
-| Web framework | [Flask](https://flask.palletsprojects.com/) (BSD) | Local server, UI, API |
-| Packaging | [PyInstaller](https://pyinstaller.org/) (GPL) | Single-binary distribution |
-| System tray | [pystray](https://github.com/moses-palmer/pystray) (LGPL) | Native OS tray icon |
-| CSS framework inspiration | [Pico CSS](https://picocss.com/) (MIT) | Dark theme starting point (now custom) |
+| Component | Project | License |
+|-----------|---------|---------|
+| Agent harness | [Nanobot](https://github.com/HKUDS/nanobot) (HKUDS) | MIT |
+| Agent loop (demo) | [smolagents](https://github.com/huggingface/smolagents) (HuggingFace) | Apache 2.0 |
+| Speech recognition | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (SYSTRAN) | MIT |
+| LLM inference | [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) | MIT |
+| LLM model | [Qwen 3.5 4B](https://huggingface.co/Qwen/Qwen3.5-4B) (Qwen Team) | Apache 2.0 |
+| Video capture | [ffmpeg](https://ffmpeg.org/) | LGPL/GPL |
+| Web framework | [Flask](https://flask.palletsprojects.com/) | BSD |
+| Packaging | [PyInstaller](https://pyinstaller.org/) | GPL |
 
 ### Architectural Influences
 
-- [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) — Zero-trust agent runtime. Informed the permission model and tool gating philosophy.
-- [OpenClaw](https://github.com/openclaw) — Multi-agent orchestration patterns. The Archivist/Worker/Scorer separation mirrors the Natasha/Scout/Skeptic architecture.
-- [Claude Code](https://claude.ai/code) (Anthropic) — Development environment. This project was built in a single session using Claude Code's subagent-driven development workflow.
-
----
-
-## Why This Exists
-
-An agent is just an inference call with context and tools. Same model, same weights — different context produces different behavior.
-
-This project tests that idea with a real use case: one small model, clear roles, isolated context, real tools, and an outcome that's genuinely useful to someone who doesn't care about AI. The interesting part isn't the model — it's how you decompose the task and what context you give each piece.
+- [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) — Zero-trust agent runtime. Tool allowlists and the "physically impossible, not just discouraged" philosophy.
+- [OpenClaw](https://github.com/openclaw) — Multi-agent orchestration. The Archivist/Worker/Dreamer separation descends from the Natasha/Scout/Skeptic pattern.
+- [Claude Code](https://claude.ai/code) (Anthropic) — This project was built in a single session.
 
 ---
 
 ## Project Structure
 
 ```
-├── main.py              # Entry point
-├── app.py               # Flask app
-├── api.py               # JSON API
-├── agent.py             # Three-agent system (Archivist, Worker, Scorer)
-├── orchestrator.py      # smolagents tool-calling loop
-├── session.py           # Batch capture state machine
-├── pipeline.py          # Capture → encode → validate → transcribe → label
-├── library.py           # Tape metadata storage
+├── main.py              # Entry point (Flask + system tray)
+├── app.py               # Flask app factory
+├── api.py               # JSON API + chat endpoint
+├── agent.py             # Three agents: Archivist, Worker, Dreamer
+├── SOUL.md              # Archivist identity and behavior
+├── AGENTS.md            # Agent architecture documentation
+├── harness/
+│   ├── tools.py         # 6 constrained tools (no shell, no delete, no network)
+│   └── runner.py        # Deterministic pipeline (harness controls flow)
+├── orchestrator.py      # smolagents demo (model controls flow)
 ├── engine/
-│   ├── devices.py       # Cross-platform device detection
+│   ├── devices.py       # Cross-platform capture card detection
 │   ├── capture.py       # ffmpeg recording with auto-stop
-│   ├── encode.py        # MP4 encoding
+│   ├── encode.py        # MP4 encoding (x264)
 │   ├── validate.py      # Post-capture file validation
 │   ├── transcribe.py    # faster-whisper with vocabulary priming
-│   ├── labeler.py       # LLM title/tag generation (API + local fallback)
-│   ├── inference.py     # Model management and hardware detection
+│   ├── labeler.py       # LLM title/tag generation
+│   ├── inference.py     # Model management + hardware detection
 │   └── deps.py          # Auto-install ffmpeg
 ├── skills/
-│   └── whisper_briefing.md  # Worker reads this before generating vocabulary
+│   └── whisper_briefing.md  # Worker reads this before vocabulary tasks
 ├── tests/               # 37 tests
 └── docs/
-    └── architecture.html    # Interactive architecture diagram
+    └── architecture.html    # Visual architecture diagram
 ```
 
 ---
