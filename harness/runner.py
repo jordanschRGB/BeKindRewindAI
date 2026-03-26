@@ -16,6 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nanobot.agent.tools.registry import ToolRegistry
 from harness.tools import register_vault_tools, VAULT_DIR, MEMORY_DIR
+from harness.grading import (
+    GRADING_CRITERIA, validate_scores, check_thresholds,
+    build_grading_prompt_section, format_failure_consequence,
+)
 
 from engine.labeler import (
     _call_api, get_api_url, get_api_key, get_model_name, _parse_labels,
@@ -26,6 +30,9 @@ from agent import (
     worker_generate_vocabulary, scorer_rate_output,
     load_memory, append_memory, append_vocabulary, append_session_log,
 )
+
+# GAN loop configuration
+MAX_ITERATIONS = 3
 
 # ── Agent Prompts (isolated context per role) ─────────────────────────────────
 
@@ -41,7 +48,7 @@ WORKER_LABEL_PROMPT = """Generate a title, description, and tags for this VHS ta
 Respond with ONLY a JSON object: {"title": "...", "description": "...", "tags": ["..."]}
 Keep the title under 60 characters. Ground everything in the transcript — no hallucinated names."""
 
-DREAMER_PROMPT = """You are the Dreamer. You are quietly reviewing a transcript before sleep.
+DREAMER_PROMPT_LEGACY = """You are the Dreamer. You are quietly reviewing a transcript before sleep.
 
 You have two things:
 1. A vocabulary list of KNOWN CORRECT words (names, terms, phrases)
@@ -60,6 +67,29 @@ Respond with ONLY JSON:
 
 If every vocabulary word appears correctly or doesn't appear at all, respond:
 {"confidence": 1.0, "doubts": [], "looks_fine": true}"""
+
+
+def _build_dreamer_prompt():
+    """Build the Dreamer prompt with structured grading rubric."""
+    rubric = build_grading_prompt_section()
+    return f"""You are the Dreamer. You are quietly reviewing a transcript before sleep.
+
+You have two things:
+1. A vocabulary list of KNOWN CORRECT words (names, terms, phrases)
+2. A transcript from speech recognition that may have mangled some of these words
+
+Speech recognition often mishears foreign names and terms. For example:
+- "Anandamayi Ma" might appear as "ananda my" or "ananda mai"
+- "satsang" might appear as "sot song" or "sat sang"
+- "Om Namah Shivaya" might appear as "oh nama shivaya"
+
+Look at each word in the vocabulary list. Is there something in the transcript
+that SOUNDS LIKE that word but is spelled differently? That's a mishear.
+
+{rubric}"""
+
+
+DREAMER_PROMPT = _build_dreamer_prompt()
 
 
 def _call_llm(system_prompt, user_content):
@@ -169,15 +199,20 @@ def step_label(transcript):
 
 
 def step_dream(transcript, vocabulary):
-    """Dreamer reviews transcript against known vocabulary. No tools. Just notices.
+    """Dreamer reviews transcript against known vocabulary. Fresh context every call.
 
-    In: transcript + known vocabulary (two different representations)
-    Out: doubt signals (different type — useful compression)
+    Context isolation: each call is a fresh LLM call with ONLY the transcript,
+    vocabulary, and grading criteria. No previous scores. No correction history.
+    This prevents the evaluator from anchoring on its own prior judgments.
+
+    In: transcript + known vocabulary
+    Out: structured grading result with per-criterion scores
     Changes nothing. Returns observations only.
     """
     if not vocabulary:
-        return {"confidence": 1.0, "doubts": [], "looks_fine": True}
+        return _dream_pass_result()
 
+    # Fresh LLM call — no prior dream results, no correction history
     response = _call_llm(
         DREAMER_PROMPT,
         f"Known vocabulary (these are definitely correct):\n{vocabulary}\n\n"
@@ -185,7 +220,7 @@ def step_dream(transcript, vocabulary):
     )
 
     if not response:
-        return {"confidence": 1.0, "doubts": [], "looks_fine": True}
+        return _dream_pass_result()
 
     # Parse dreamer output
     text = response.strip()
@@ -198,25 +233,112 @@ def step_dream(transcript, vocabulary):
     if start >= 0 and end > start:
         try:
             data = json.loads(text[start:end])
-            return {
-                "confidence": float(data.get("confidence", 1.0)),
-                "doubts": data.get("doubts", []),
-                "looks_fine": data.get("looks_fine", True),
-            }
+            return _parse_dream_result(data)
         except (json.JSONDecodeError, ValueError):
             pass
 
-    return {"confidence": 1.0, "doubts": [], "looks_fine": True}
+    return _dream_pass_result()
 
 
-def step_apply_corrections(transcript, dream_result, vocabulary):
+def _dream_pass_result():
+    """Default passing result when dreamer can't run or vocabulary is empty."""
+    return {
+        "scores": {c: 10 for c in GRADING_CRITERIA},
+        "reasons": {c: "No issues detected" for c in GRADING_CRITERIA},
+        "pass": True,
+        "consequence": "",
+        # Legacy fields for backward compatibility
+        "confidence": 1.0,
+        "doubts": [],
+        "looks_fine": True,
+    }
+
+
+def _parse_dream_result(data):
+    """Parse structured dream output, with fallback to legacy format."""
+    # New structured format
+    if "scores" in data:
+        scores = {}
+        for c in GRADING_CRITERIA:
+            val = data["scores"].get(c, 10)
+            scores[c] = int(val) if isinstance(val, (int, float)) else 10
+        reasons = data.get("reasons", {})
+        is_pass = data.get("pass", True)
+        consequence = data.get("consequence", "")
+
+        # Validate: recompute pass from thresholds if model says pass but scores disagree
+        threshold_pass, failures = check_thresholds(scores)
+        if not threshold_pass:
+            is_pass = False
+            if not consequence:
+                consequence = format_failure_consequence(failures, reasons)
+
+        # Extract doubts from reasons for backward compatibility
+        doubts = []
+        for criterion, reason in reasons.items():
+            if reason and reason != "No issues detected":
+                doubts.append(reason)
+
+        return {
+            "scores": scores,
+            "reasons": reasons,
+            "pass": is_pass,
+            "consequence": consequence,
+            # Legacy fields
+            "confidence": min(scores.values()) / 10.0 if scores else 1.0,
+            "doubts": doubts,
+            "looks_fine": is_pass,
+        }
+
+    # Legacy format fallback
+    confidence = float(data.get("confidence", 1.0))
+    doubts = data.get("doubts", [])
+    looks_fine = data.get("looks_fine", True)
+
+    # Convert legacy to structured: if doubts exist, mark accuracy as below threshold
+    if doubts:
+        scores = {
+            "accuracy": 5,
+            "completeness": 8,
+            "label_quality": 7,
+            "hallucination": 9,
+        }
+        reasons = {"accuracy": "; ".join(doubts)}
+        is_pass = False
+        _, failures = check_thresholds(scores)
+        consequence = format_failure_consequence(failures, reasons)
+    else:
+        scores = {c: 10 for c in GRADING_CRITERIA}
+        reasons = {}
+        is_pass = True
+        consequence = ""
+
+    return {
+        "scores": scores,
+        "reasons": reasons,
+        "pass": is_pass,
+        "consequence": consequence,
+        "confidence": confidence,
+        "doubts": doubts,
+        "looks_fine": looks_fine,
+    }
+
+
+def step_apply_corrections(transcript, dream_result, vocabulary, feedback=None):
     """Archivist decides: apply corrections ONLY where dreamer doubt + memory align.
 
     This is deterministic string replacement, not model generation.
     The model flagged the doubt. Python applies the fix. No creative rewriting.
+
+    Args:
+        transcript: current transcript text
+        dream_result: structured dream output with scores/reasons/doubts
+        vocabulary: comma-separated known-correct words
+        feedback: optional dict of structured reasons per criterion (from dream)
     """
-    if dream_result.get("looks_fine", True) or not dream_result.get("doubts"):
-        return transcript, []
+    if dream_result.get("looks_fine", True) or dream_result.get("pass", True):
+        if not dream_result.get("doubts"):
+            return transcript, []
 
     corrections_applied = []
     corrected = transcript
@@ -338,30 +460,62 @@ def run_pipeline(user_description, video_path):
         return results
     log("transcribe", {"length": len(transcript), "sample": transcript[:100]})
 
-    # 4. Dreamer reviews transcript (no tools, just notices)
-    dream = step_dream(transcript, vocab)
-    log("dream", {"confidence": dream["confidence"], "doubts": dream["doubts"], "looks_fine": dream["looks_fine"]})
+    # 4. GAN loop: evaluate → correct → re-evaluate (max MAX_ITERATIONS rounds)
+    # Context isolation: each step_dream call is fresh. No prior scores or
+    # correction history leak into the Dreamer's context.
+    final_dream = None
+    for iteration in range(MAX_ITERATIONS):
+        # Fresh evaluation — Dreamer sees ONLY transcript + vocabulary + rubric
+        dream = step_dream(transcript, vocab)
+        final_dream = dream
+        log("dream", {
+            "iteration": iteration + 1,
+            "scores": dream.get("scores", {}),
+            "pass": dream.get("pass", True),
+            "consequence": dream.get("consequence", ""),
+            "doubts": dream.get("doubts", []),
+        })
 
-    # 5. Archivist applies corrections (only where doubt + memory align)
-    corrected_transcript, corrections = step_apply_corrections(transcript, dream, vocab)
-    if corrections:
-        log("corrections", {"applied": corrections})
-        transcript = corrected_transcript
+        if dream.get("pass", True):
+            break
 
-    # 6. Label from (possibly corrected) transcript
+        if iteration < MAX_ITERATIONS - 1:
+            # Feed structured feedback to correction step
+            corrected_transcript, corrections = step_apply_corrections(
+                transcript, dream, vocab,
+                feedback=dream.get("reasons"),
+            )
+            if corrections:
+                log("corrections", {"iteration": iteration + 1, "applied": corrections})
+                transcript = corrected_transcript
+            else:
+                # No corrections possible — stop looping
+                log("corrections", {"iteration": iteration + 1, "applied": [], "note": "no actionable corrections"})
+                break
+        else:
+            # Circuit breaker: max iterations reached
+            results["warning"] = f"Quality threshold not met after {MAX_ITERATIONS} rounds"
+            results["final_scores"] = dream.get("scores", {})
+            log("circuit_breaker", {
+                "iteration": iteration + 1,
+                "scores": dream.get("scores", {}),
+                "consequence": dream.get("consequence", ""),
+            })
+
+    # 5. Label from (possibly corrected) transcript
     labels, label_err = step_label(transcript)
     log("label", {"labels": labels, "error": label_err})
 
-    # 5. Save metadata
+    # 6. Save metadata
     base_name = os.path.splitext(os.path.basename(video_path))[0]
     metadata = step_save(base_name, video_path, transcript, labels, vocab)
     log("save", {"file": f"{base_name}.json"})
 
-    # 6. Log session to memory
+    # 7. Log session to memory
     title = labels.get("title", "untitled") if labels else "untitled"
     append_session_log(f"Captured '{title}' from {os.path.basename(video_path)}")
 
-    # 7. Summarize for user (Archivist agent)
+    # 8. Summarize for user (Archivist agent)
     summary = step_summarize(labels)
     log("summary", {"message": summary})
 
@@ -370,6 +524,14 @@ def run_pipeline(user_description, video_path):
     results["labels"] = labels
     results["summary"] = summary
     results["vocabulary"] = vocab
+
+    # Include grading results
+    if final_dream:
+        results["grading"] = {
+            "scores": final_dream.get("scores", {}),
+            "pass": final_dream.get("pass", True),
+            "consequence": final_dream.get("consequence", ""),
+        }
 
     return results
 

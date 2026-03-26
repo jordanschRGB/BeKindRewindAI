@@ -10,6 +10,9 @@ import time
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+from harness.grading import (
+    GRADING_CRITERIA, check_thresholds, format_failure_consequence,
+)
 
 # The only directory these tools can write to
 VAULT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "MemoryVault")
@@ -188,7 +191,7 @@ class LabelTapeTool(Tool):
 
 
 class ScoreLabelTool(Tool):
-    """Rates label quality and states human consequences for bad output."""
+    """Rates label quality per structured grading rubric with threshold checks."""
 
     @property
     def name(self) -> str:
@@ -196,10 +199,15 @@ class ScoreLabelTool(Tool):
 
     @property
     def description(self) -> str:
+        criteria_desc = ", ".join(
+            f"{name} (threshold {cfg['threshold']})"
+            for name, cfg in GRADING_CRITERIA.items()
+        )
         return (
-            "Rate a generated label 1-10. For scores below 7, states what the "
-            "user would have to do because of the error (e.g. 'user had to rename "
-            "the file manually'). Use this to check quality before saving."
+            f"Rate a generated label on structured criteria: {criteria_desc}. "
+            "Returns per-criterion scores, pass/fail, and a concrete consequence "
+            "statement describing what the user would have to do manually for any "
+            "criterion below its threshold."
         )
 
     @property
@@ -222,9 +230,36 @@ class ScoreLabelTool(Tool):
     async def execute(self, transcript: str, labels_json: str) -> str:
         from agent import scorer_rate_output
         success, score_data, err = scorer_rate_output(transcript, labels_json)
-        if success:
-            return json.dumps(score_data)
-        return json.dumps({"error": err})
+        if not success:
+            return json.dumps({"error": err})
+
+        # Wrap legacy single-score output in structured grading format
+        legacy_score = score_data.get("score", 0)
+        result = {
+            "scores": {
+                "accuracy": legacy_score,
+                "completeness": legacy_score,
+                "label_quality": legacy_score,
+                "hallucination": legacy_score,
+            },
+            "reasons": {
+                "accuracy": score_data.get("reason", ""),
+                "completeness": score_data.get("reason", ""),
+                "label_quality": score_data.get("reason", ""),
+                "hallucination": score_data.get("reason", ""),
+            },
+            "consequence": score_data.get("consequence", ""),
+        }
+
+        # Check thresholds
+        passed, failures = check_thresholds(result["scores"])
+        result["pass"] = passed
+        if not passed and not result["consequence"]:
+            result["consequence"] = format_failure_consequence(
+                failures, result["reasons"]
+            )
+
+        return json.dumps(result)
 
 
 class SaveMetadataTool(Tool):
