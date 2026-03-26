@@ -12,6 +12,8 @@ A $15 capture card, this app, and an afternoon is all it takes. You shouldn't ne
 
 > Proof of concept. Capture pipeline works on Windows. AI tested against real models. Hardware testing with physical capture cards is next.
 
+**The short version:** Each tape teaches the system new words. By tape 20, transcription is dramatically better than tape 1 — same model, richer input. Three agents share one small model with isolated context. The AI has six tools and physically cannot delete files, access the internet, or run shell commands. It's not a chatbot that tells you how to digitize tapes — it actually does it.
+
 ---
 
 ## The actual problem with multi-agent pipelines
