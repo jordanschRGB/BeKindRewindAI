@@ -416,3 +416,99 @@ def append_session_log(summary):
     """Log a completed session."""
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     append_memory("Sessions", f"{timestamp}: {summary}")
+
+
+def append_vocabulary_feedback(used_words, unused_words):
+    """Record which vocabulary words were actually used in corrections vs unused.
+
+    Stores under '## Vocabulary Feedback' in archivist_memory.md so future
+    sessions can steer the Worker toward historically useful terms and away
+    from noise.
+
+    Args:
+        used_words: list of words that appeared in corrections applied
+        unused_words: list of words generated but never matched in transcript
+    """
+    memory = load_memory()
+
+    if not memory:
+        memory = "# Archivist Memory\n\n"
+
+    section_header = "## Vocabulary Feedback"
+    if section_header not in memory:
+        memory += f"\n{section_header}\n"
+
+    timestamp = time.strftime("%Y-%m-%d %H:%M")
+    used_str = ", ".join(used_words) if used_words else "(none)"
+    unused_str = ", ".join(unused_words) if unused_words else "(none)"
+    entry = f"- {timestamp}: used=[{used_str}] noise=[{unused_str}]\n"
+
+    # Insert the entry after the section header
+    idx = memory.index(section_header) + len(section_header)
+    memory = memory[:idx] + "\n" + entry + memory[idx:]
+
+    save_memory(memory)
+
+
+def get_vocabulary_feedback(memory_text):
+    """Extract vocabulary feedback summary from memory text.
+
+    Returns a dict with 'useful' and 'noise' word lists parsed from the
+    Vocabulary Feedback section, aggregated across all past entries.
+
+    Args:
+        memory_text: full content of archivist_memory.md
+
+    Returns:
+        dict: {"useful": [words...], "noise": [words...]}
+    """
+    from collections import Counter
+
+    useful_counts = Counter()
+    noise_counts = Counter()
+
+    section = "## Vocabulary Feedback"
+    if section not in memory_text:
+        return {"useful": [], "noise": []}
+
+    # Extract just the feedback section lines
+    start = memory_text.index(section) + len(section)
+    # Find next section (starts with "## ") or end of string
+    rest = memory_text[start:]
+    next_section = rest.find("\n## ")
+    if next_section != -1:
+        rest = rest[:next_section]
+
+    for line in rest.splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        # Parse: "- TIMESTAMP: used=[w1, w2] noise=[w3, w4]"
+        try:
+            used_start = line.index("used=[") + len("used=[")
+            used_end = line.index("]", used_start)
+            noise_start = line.index("noise=[") + len("noise=[")
+            noise_end = line.index("]", noise_start)
+        except ValueError:
+            continue
+
+        used_part = line[used_start:used_end].strip()
+        noise_part = line[noise_start:noise_end].strip()
+
+        if used_part and used_part != "(none)":
+            for w in used_part.split(","):
+                w = w.strip()
+                if w:
+                    useful_counts[w] += 1
+
+        if noise_part and noise_part != "(none)":
+            for w in noise_part.split(","):
+                w = w.strip()
+                if w:
+                    noise_counts[w] += 1
+
+    # Words that appeared more as useful than noise
+    useful = [w for w, c in useful_counts.items() if c > noise_counts.get(w, 0)]
+    noise = [w for w, c in noise_counts.items() if noise_counts[w] > useful_counts.get(w, 0)]
+
+    return {"useful": useful, "noise": noise}

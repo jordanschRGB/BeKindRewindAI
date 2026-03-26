@@ -25,6 +25,7 @@ from agent import (
     DOMAIN_PRESETS, WHISPER_BRIEFING,
     worker_generate_vocabulary, scorer_rate_output,
     load_memory, append_memory, append_vocabulary, append_session_log,
+    append_vocabulary_feedback, get_vocabulary_feedback,
 )
 
 # ── Agent Prompts (isolated context per role) ─────────────────────────────────
@@ -96,10 +97,25 @@ def step_greet(memory_text):
 
 
 def step_generate_vocabulary(user_description, memory_text=""):
-    """Worker generates Whisper vocabulary. Reads briefing + user description."""
+    """Worker generates Whisper vocabulary. Reads briefing + user description.
+
+    When feedback history exists in memory, the Worker is told which words
+    have been historically useful (actually corrected something) vs which
+    were noise (generated but never matched). This steers generation toward
+    high-signal terms.
+    """
     context = WHISPER_BRIEFING + "\n\n"
     if memory_text:
         context += f"Previously learned vocabulary:\n{memory_text}\n\n"
+
+        # Read feedback to guide the Worker
+        feedback = get_vocabulary_feedback(memory_text)
+        if feedback["useful"]:
+            context += f"Words that have historically HELPED (include similar terms): {', '.join(feedback['useful'])}\n"
+        if feedback["noise"]:
+            context += f"Words that were generated but NEVER matched anything (deprioritize): {', '.join(feedback['noise'])}\n"
+        context += "\n"
+
     context += f"User description: {user_description}"
 
     response = _call_llm(WORKER_VOCAB_PROMPT, context)
@@ -347,6 +363,25 @@ def run_pipeline(user_description, video_path):
     if corrections:
         log("corrections", {"applied": corrections})
         transcript = corrected_transcript
+
+    # Log vocabulary feedback: which words were actually used vs generated but idle
+    vocab_words = [w.strip() for w in vocab.split(",") if w.strip()] if vocab else []
+    used_words = []
+    unused_words = []
+    if vocab_words:
+        # A word was "used" if it appears as the target in any applied correction
+        corrected_targets = set()
+        for c in corrections:
+            # correction format: "old → new"
+            if " \u2192 " in c:
+                corrected_targets.add(c.split(" \u2192 ")[1].strip())
+        for w in vocab_words:
+            if w in corrected_targets:
+                used_words.append(w)
+            else:
+                unused_words.append(w)
+        append_vocabulary_feedback(used_words, unused_words)
+        log("vocabulary_feedback", {"used": used_words, "unused_count": len(unused_words)})
 
     # 6. Label from (possibly corrected) transcript
     labels, label_err = step_label(transcript)
