@@ -27,7 +27,11 @@ def list_tapes(output_dir):
 
 
 def get_tape(output_dir, base_name):
-    path = os.path.join(output_dir, f"{base_name}.json")
+    # Prevent path traversal: ensure the resolved path stays inside output_dir
+    full = os.path.abspath(os.path.join(output_dir, f"{base_name}.json"))
+    if not full.startswith(os.path.abspath(output_dir) + os.sep):
+        return None  # Silently reject — callers treat None as 404
+    path = full
     if not os.path.exists(path):
         return None
     try:

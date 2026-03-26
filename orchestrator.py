@@ -67,7 +67,7 @@ def start_capture(video_device: str, audio_device: str, output_name: str) -> str
         output_name: Base name for the output file (e.g. "tape_001")
     """
     import platform
-    from engine.capture import Recorder
+    from engine.capture import Recorder, _build_capture_cmd
 
     output_dir = os.path.join(os.path.expanduser("~"), "Videos", "MemoryVault")
     os.makedirs(output_dir, exist_ok=True)
@@ -77,9 +77,10 @@ def start_capture(video_device: str, audio_device: str, output_name: str) -> str
 
     fmt = "dshow" if platform.system() == "Windows" else "v4l2"
     video_cfg = {"format": fmt, "device": video_device}
-    audio_cfg = {"format": fmt, "device": audio_device}
+    audio_cfg = {"format": fmt if platform.system() != "Linux" else "alsa", "device": audio_device}
 
-    recorder = Recorder(video_cfg, audio_cfg, raw_path)
+    cmd = _build_capture_cmd(video_cfg, audio_cfg, raw_path)
+    recorder = Recorder(cmd, raw_path)
     recorder.start()
 
     # Wait for recording to finish (auto-stop on silence/black)
@@ -143,19 +144,9 @@ def transcribe_video_file(video_path: str, whisper_vocabulary: str) -> str:
         return json.dumps({"status": "error", "error": err})
 
     try:
-        from faster_whisper import WhisperModel
-        import ctranslate2
+        from engine.transcribe import get_whisper_model
 
-        device = "cpu"
-        compute_type = "int8"
-        try:
-            if ctranslate2.get_cuda_device_count() > 0:
-                device = "cuda"
-                compute_type = "float16"
-        except Exception:
-            pass
-
-        model = WhisperModel("small", device=device, compute_type=compute_type)
+        model = get_whisper_model()
 
         # Use the vocabulary as initial_prompt — this is the key insight
         segments, info = model.transcribe(

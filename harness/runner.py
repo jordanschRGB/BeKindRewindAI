@@ -14,7 +14,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nanobot.agent.tools.registry import ToolRegistry
+from harness.registry import ToolRegistry
 from harness.tools import register_vault_tools, VAULT_DIR, MEMORY_DIR
 
 from engine.labeler import (
@@ -96,33 +96,6 @@ def step_greet(memory_text):
     )
 
 
-def _extract_vocabulary_section(memory_text):
-    """Extract only the Vocabulary section from memory, not the full file.
-
-    The Worker does not need Sessions history or Vocabulary Feedback entries —
-    those grow unboundedly and would bloat the 4B model's context on every call.
-    We pass only the raw vocabulary words from prior sessions.
-    """
-    if not memory_text:
-        return ""
-    section_header = "## Vocabulary"
-    if section_header not in memory_text:
-        return ""
-    start = memory_text.index(section_header) + len(section_header)
-    rest = memory_text[start:]
-    # Stop at next section
-    next_section = rest.find("\n## ")
-    if next_section != -1:
-        rest = rest[:next_section]
-    # Extract only the word entries (lines starting with "- ")
-    words = []
-    for line in rest.splitlines():
-        line = line.strip()
-        if line.startswith("- "):
-            words.append(line[2:].strip())
-    return "\n".join(words) if words else ""
-
-
 def step_generate_vocabulary(user_description, memory_text=""):
     """Worker generates Whisper vocabulary. Reads briefing + user description.
 
@@ -178,19 +151,9 @@ def step_transcribe(video_path, vocabulary=""):
         return None, err
 
     try:
-        from faster_whisper import WhisperModel
-        import ctranslate2
+        from engine.transcribe import get_whisper_model
 
-        device = "cpu"
-        compute_type = "int8"
-        try:
-            if ctranslate2.get_cuda_device_count() > 0:
-                device = "cuda"
-                compute_type = "float16"
-        except Exception:
-            pass
-
-        model = WhisperModel("small", device=device, compute_type=compute_type)
+        model = get_whisper_model()
         segments, info = model.transcribe(
             wav_path, beam_size=5,
             initial_prompt=vocabulary if vocabulary else None,

@@ -21,11 +21,11 @@ MODELS = {
     },
     "qwen-labeler": {
         "name": "Qwen 3.5 4B",
-        "filename": "Qwen3.5-4B-Q4_K_S.gguf",
+        "filename": "Qwen3.5-4B-Q4_K_M.gguf",
         "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
         "size_mb": 2500,
         "purpose": "labeling",
-        "local_path": os.path.join(os.path.expanduser("~"), ".lmstudio", "models", "unsloth", "Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_S.gguf"),
+        "local_path": os.path.join(os.path.expanduser("~"), ".lmstudio", "models", "unsloth", "Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
     },
 }
 

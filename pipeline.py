@@ -5,7 +5,7 @@ import re
 import threading
 import time
 
-from engine.capture import Recorder, check_video_signal
+from engine.capture import Recorder, check_video_signal, _build_capture_cmd
 from engine.encode import encode_to_mp4
 from engine.validate import validate_capture
 from library import save_metadata
@@ -46,7 +46,8 @@ def _pipeline_thread(session, config, on_complete):
     session.set_state(SessionState.RECORDING)
     tape["status"] = "recording"
 
-    recorder = Recorder(config["video"], config["audio"], raw_path)
+    cmd = _build_capture_cmd(config["video"], config["audio"], raw_path)
+    recorder = Recorder(cmd, raw_path)
     session._recorder = recorder
     recorder.start()
 

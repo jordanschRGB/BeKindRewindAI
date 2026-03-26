@@ -1,3 +1,16 @@
 flask>=3.0
 pystray>=0.19
 Pillow>=10.0
+
+# AI / speech recognition
+faster-whisper>=1.0.0
+smolagents>=1.0.0
+
+# Local inference (llama.cpp Python bindings)
+# Install separately if you need GPU support:
+#   CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+llama-cpp-python>=0.2.0
+
+# Note: nanobot on PyPI (0.x) is a robotics framework — not this project.
+# The harness uses a bundled tool registry in harness/registry.py.
+# No nanobot package required.

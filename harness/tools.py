@@ -9,7 +9,7 @@ import os
 import time
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from harness.registry import Tool
 
 # The only directory these tools can write to
 VAULT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "MemoryVault")
@@ -58,14 +58,22 @@ class GenerateVocabularyTool(Tool):
         }
 
     async def execute(self, description: str, existing_vocabulary: str = "") -> str:
-        # This tool's output IS the vocabulary — no side effects
-        # The agent generates vocabulary via its own inference
-        # We just pass through and let the caller use it for Whisper
-        parts = []
+        """Call the Worker agent to generate Whisper vocabulary.
+
+        Passes the description and (optionally) existing vocabulary to
+        worker_generate_vocabulary, which uses the Whisper briefing skill
+        and past session feedback to produce a focused word list.
+        """
+        from agent import worker_generate_vocabulary
+
+        memory_context = existing_vocabulary if existing_vocabulary else ""
+        success, vocab, err = worker_generate_vocabulary(description, memory_text=memory_context)
+        if success and vocab:
+            return vocab
+        # Fallback: return existing vocabulary if available, otherwise signal failure
         if existing_vocabulary:
-            parts.append(existing_vocabulary)
-        parts.append(f"(Generate vocabulary for: {description})")
-        return ", ".join(parts)
+            return existing_vocabulary
+        return json.dumps({"error": err or "Vocabulary generation failed"})
 
 
 class TranscribeTool(Tool):
@@ -118,19 +126,9 @@ class TranscribeTool(Tool):
             return json.dumps({"error": err})
 
         try:
-            from faster_whisper import WhisperModel
-            import ctranslate2
+            from engine.transcribe import get_whisper_model
 
-            device = "cpu"
-            compute_type = "int8"
-            try:
-                if ctranslate2.get_cuda_device_count() > 0:
-                    device = "cuda"
-                    compute_type = "float16"
-            except Exception:
-                pass
-
-            model = WhisperModel("small", device=device, compute_type=compute_type)
+            model = get_whisper_model()
             segments, info = model.transcribe(
                 wav_path,
                 beam_size=5,
@@ -269,6 +267,9 @@ class SaveMetadataTool(Tool):
             return json.dumps({"error": str(e)})
 
         os.makedirs(VAULT_DIR, exist_ok=True)
+
+        if os.path.exists(path):
+            return json.dumps({"error": f"File already exists: {filename}. Cannot overwrite."})
 
         try:
             data = json.loads(metadata)

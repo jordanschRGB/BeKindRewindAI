@@ -267,8 +267,14 @@ Do NOT include common English words Whisper already handles."""
 def worker_generate_vocabulary(user_description, memory_text=""):
     """Worker agent: generate Whisper vocabulary from user description.
 
-    Isolated context — only sees the briefing, user description, and memory.
-    Does NOT see conversation history.
+    Isolated context — only sees the briefing, user description, and distilled
+    feedback. Does NOT receive the full memory file (sessions history, etc.)
+    because that grows unboundedly and bloats the 4B model's context.
+
+    Context passed:
+    1. WHISPER_BRIEFING (skill doc — always present)
+    2. Up to 30 feedback entries distilled into 2 guidance lines (replaces raw history)
+    3. User description
 
     Returns:
         (success: bool, vocabulary: str, error: str|None)
@@ -277,13 +283,29 @@ def worker_generate_vocabulary(user_description, memory_text=""):
     if not api_url:
         return False, "", "No API endpoint configured"
 
-    context_parts = [WHISPER_BRIEFING]
+    context = WHISPER_BRIEFING + "\n\n"
+
     if memory_text:
-        context_parts.append(f"\nPrevious vocabulary the user found helpful:\n{memory_text}")
+        # Distill feedback — pass only guidance lines, not raw memory file
+        feedback = get_vocabulary_feedback(memory_text)
+        guidance_lines = []
+        if feedback["useful"]:
+            guidance_lines.append(
+                f"Previously effective vocabulary (prioritize similar terms): {', '.join(feedback['useful'])}"
+            )
+        if feedback["noise"]:
+            guidance_lines.append(
+                f"Previously ineffective vocabulary (deprioritize): {', '.join(feedback['noise'])}"
+            )
+        if guidance_lines:
+            context += "Vocabulary guidance from past sessions:\n"
+            context += "\n".join(guidance_lines) + "\n\n"
+
+    context += f"User description: {user_description}\n\nVocabulary list:"
 
     messages = [
         {"role": "system", "content": WORKER_VOCAB_SYSTEM},
-        {"role": "user", "content": "\n\n".join(context_parts) + f"\n\nUser description: {user_description}\n\nVocabulary list:"},
+        {"role": "user", "content": context},
     ]
 
     success, text, err = _call_api(
