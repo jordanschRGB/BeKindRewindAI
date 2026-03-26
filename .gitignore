@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# App data (user-specific, never committed)
+*.gguf
+*.wav
+*.mp4
+*.mkv
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage

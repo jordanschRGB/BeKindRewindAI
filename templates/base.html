@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MemoryVault</title>
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+    <nav class="mv-nav">
+        <a href="/" class="mv-logo">
+            <span class="mv-logo-icon">MV</span>
+            MemoryVault
+        </a>
+        <ul>
+            <li><a href="/">Home</a></li>
+            <li><a href="/setup">Setup</a></li>
+            <li><a href="/chat">Chat</a></li>
+            <li><a href="/session">Record</a></li>
+            <li><a href="/library">Library</a></li>
+            <li><a href="/settings">Settings</a></li>
+        </ul>
+    </nav>
+    <main class="mv-main">
+        {% block content %}{% endblock %}
+    </main>
+    <script src="/static/app.js"></script>
+</body>
+</html>

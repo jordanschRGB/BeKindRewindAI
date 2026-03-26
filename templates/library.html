@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Library</h1>
+<p>All your captured tapes in one place.</p>
+
+<div class="mv-card">
+    <table>
+        <thead><tr><th>Name</th><th>Duration</th><th>Size</th><th>Date</th><th>Status</th></tr></thead>
+        <tbody id="library-list"></tbody>
+    </table>
+    <div id="library-empty" class="mv-empty" style="display:none;">
+        <div style="font-size:3rem; opacity:0.2; margin-bottom:1rem;">&#x1F4FC;</div>
+        <p>No tapes captured yet.</p>
+        <a href="/session" class="mv-btn mv-btn-primary" style="margin-top:1rem;">Start Recording</a>
+    </div>
+</div>
+
+<script>
+fetch("/api/library").then(r => r.json()).then(data => {
+    const tapes = data.tapes || [];
+    if (!tapes.length) { document.getElementById("library-empty").style.display = "block"; return; }
+    const tbody = document.getElementById("library-list");
+    tapes.forEach(t => {
+        const tr = document.createElement("tr");
+        const dur = t.duration_seconds ? Math.floor(t.duration_seconds/60) + " min" : "-";
+        const size = t.size_bytes ? (t.size_bytes/1024/1024).toFixed(0) + " MB" : "-";
+        const valid = t.validation?.not_blank ? "OK" : "Check";
+        tr.innerHTML = "<td>" + t.filename + "</td><td>" + dur + "</td><td>" + size + "</td><td>" + (t.captured_at||"-") + "</td><td>" + valid + "</td>";
+        tbody.appendChild(tr);
+    });
+});
+</script>
+{% endblock %}

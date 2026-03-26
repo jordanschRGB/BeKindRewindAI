@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BeKindRewindAI — Architecture</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0f0e0c; color: #e8e0d4; font-family: 'Segoe UI', system-ui, sans-serif; padding: 2rem; }
+h1 { font-size: 2rem; color: #e8a840; margin-bottom: 0.5rem; }
+h2 { font-size: 1.2rem; color: #9a9080; margin-bottom: 2rem; font-weight: 400; }
+.diagram { max-width: 900px; margin: 0 auto; }
+
+/* Layers */
+.layer { border: 1px solid #3a3228; border-radius: 16px; padding: 1.5rem; margin-bottom: 1rem; position: relative; }
+.layer-label { position: absolute; top: -10px; left: 20px; background: #0f0e0c; padding: 0 0.5rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #6a6050; }
+
+.layer-user { border-color: #e8a840; }
+.layer-framework { border-color: #5090d0; }
+.layer-agents { border-color: #5cb870; }
+.layer-tools { border-color: #9a9080; }
+.layer-infra { border-color: #6a6050; }
+
+/* Boxes */
+.box { background: #242018; border: 1px solid #3a3228; border-radius: 10px; padding: 1rem 1.25rem; margin: 0.5rem; display: inline-block; vertical-align: top; }
+.box-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.25rem; }
+.box-desc { font-size: 0.8rem; color: #9a9080; }
+.box-amber { border-left: 3px solid #e8a840; }
+.box-blue { border-left: 3px solid #5090d0; }
+.box-green { border-left: 3px solid #5cb870; }
+.box-red { border-left: 3px solid #d45050; }
+.box-dim { border-left: 3px solid #6a6050; }
+
+/* Flow arrows */
+.arrow { text-align: center; color: #6a6050; font-size: 1.5rem; margin: 0.5rem 0; }
+.arrow-label { font-size: 0.75rem; color: #9a9080; }
+
+/* Grid */
+.row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.row .box { flex: 1; min-width: 200px; }
+
+/* Agent highlight */
+.agent-row { display: flex; gap: 0.5rem; }
+.agent-row .box { flex: 1; min-width: 150px; }
+.agent-isolated { border-top: 2px dashed #5cb870; padding-top: 0.75rem; margin-top: 0.5rem; }
+.agent-isolated-label { font-size: 0.7rem; color: #5cb870; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.25rem; }
+
+/* Key insight callouts */
+.insight { background: #1e1a14; border-left: 3px solid #e8a840; padding: 1rem 1.25rem; margin: 1.5rem 0; border-radius: 0 8px 8px 0; }
+.insight-title { color: #e8a840; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem; }
+.insight-text { color: #9a9080; font-size: 0.85rem; line-height: 1.5; }
+
+/* Legend */
+.legend { display: flex; gap: 1.5rem; margin-top: 2rem; flex-wrap: wrap; }
+.legend-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #9a9080; }
+.legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+
+/* Footer */
+.footer { text-align: center; margin-top: 3rem; color: #6a6050; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<div class="diagram">
+
+<h1>BeKindRewindAI</h1>
+<h2>Architecture — One model, three agents, ten tools</h2>
+
+<!-- User Layer -->
+<div class="layer layer-user">
+    <span class="layer-label">User Interface</span>
+    <div class="row">
+        <div class="box box-amber">
+            <div class="box-title">Chat UI</div>
+            <div class="box-desc">Browser at localhost:5000/chat<br>User talks to the Archivist</div>
+        </div>
+        <div class="box box-amber">
+            <div class="box-title">Manual UI</div>
+            <div class="box-desc">Setup / Record / Library / Settings<br>Button-based fallback workflow</div>
+        </div>
+        <div class="box box-amber">
+            <div class="box-title">JSON API</div>
+            <div class="box-desc">/api/* endpoints<br>Scripts and external agents</div>
+        </div>
+    </div>
+</div>
+
+<div class="arrow">&#x25BC;<br><span class="arrow-label">user message or API call</span></div>
+
+<!-- Framework Layer -->
+<div class="layer layer-framework">
+    <span class="layer-label">Framework — smolagents</span>
+    <div class="box box-blue" style="width: 100%;">
+        <div class="box-title">ToolCallingAgent Loop</div>
+        <div class="box-desc">
+            Model receives message → decides which tool to call → executes tool → observes result → decides next step → repeats until done.
+            <br>Handles: tool dispatch, logging, step tracking, max iterations, error recovery.
+        </div>
+    </div>
+</div>
+
+<div class="arrow">&#x25BC;<br><span class="arrow-label">tool calls with isolated context</span></div>
+
+<!-- Agent Layer -->
+<div class="layer layer-agents">
+    <span class="layer-label">Three Agents — Same Model, Isolated Context</span>
+    <div class="agent-row">
+        <div class="box box-green">
+            <div class="box-title">The Archivist</div>
+            <div class="box-desc">Driver agent. Talks to user.</div>
+            <div class="agent-isolated">
+                <div class="agent-isolated-label">Context window</div>
+                <div class="box-desc">Conversation history<br>Memory (.md file)<br>System prompt: warm, transparent</div>
+            </div>
+        </div>
+        <div class="box box-red">
+            <div class="box-title">Scorer</div>
+            <div class="box-desc">Enforcer. Rates outputs.</div>
+            <div class="agent-isolated">
+                <div class="agent-isolated-label">Context window</div>
+                <div class="box-desc">Transcript + labels ONLY<br>No conversation history<br>System prompt: score + consequence</div>
+            </div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">Worker</div>
+            <div class="box-desc">Labeler + vocabulary generator.</div>
+            <div class="agent-isolated">
+                <div class="agent-isolated-label">Context window</div>
+                <div class="box-desc">Skill briefing + user description<br>Last score feedback<br>System prompt: output JSON only</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="insight">
+    <div class="insight-title">Key Insight: Context Isolation</div>
+    <div class="insight-text">All three agents use the same Qwen 3.5 4B model (same weights, same GGUF). The different behaviors emerge entirely from what context each agent receives and what system prompt frames its task. The Scorer never sees the conversation. The Worker never sees the user. The Archivist never sees raw scores. Isolation prevents context bleed between roles.</div>
+</div>
+
+<div class="arrow">&#x25BC;<br><span class="arrow-label">tool execution</span></div>
+
+<!-- Tools Layer -->
+<div class="layer layer-tools">
+    <span class="layer-label">Tools — 10 Registered Actions</span>
+    <div class="row">
+        <div class="box box-dim">
+            <div class="box-title">detect_devices</div>
+            <div class="box-desc">Find capture cards</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">generate_vocabulary</div>
+            <div class="box-desc">Whisper priming words</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">start_capture</div>
+            <div class="box-desc">Record from device</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">encode_video</div>
+            <div class="box-desc">Raw → MP4</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">transcribe</div>
+            <div class="box-desc">Whisper ASR</div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="box box-dim">
+            <div class="box-title">label_tape</div>
+            <div class="box-desc">Title + tags from transcript</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">score_label</div>
+            <div class="box-desc">Rate quality 1-10</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">save_metadata</div>
+            <div class="box-desc">Write JSON alongside video</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">read_memory</div>
+            <div class="box-desc">Load .md preferences</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">save_memory</div>
+            <div class="box-desc">Append to .md file</div>
+        </div>
+    </div>
+</div>
+
+<div class="insight">
+    <div class="insight-title">Key Insight: Vocabulary Priming</div>
+    <div class="insight-text">The Archivist asks "what's on your tapes?" not because it's curious — it uses the answer to generate a vocabulary list (via the Worker agent) that gets injected into Whisper's decoder as an initial_prompt. This biases Whisper toward domain-specific words it would otherwise mangle. "Om Namah Shivaya" instead of "oh no my shivaya." The user thinks they're having a conversation. The system is optimizing a speech recognition pipeline.</div>
+</div>
+
+<div class="arrow">&#x25BC;</div>
+
+<!-- Infrastructure Layer -->
+<div class="layer layer-infra">
+    <span class="layer-label">Infrastructure — All Local</span>
+    <div class="row">
+        <div class="box box-dim">
+            <div class="box-title">Qwen 3.5 4B</div>
+            <div class="box-desc">Single GGUF, ~2.5GB<br>Via LM Studio / Ollama / llama-cpp-python<br>Any OpenAI-compatible endpoint</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">faster-whisper</div>
+            <div class="box-desc">CTranslate2 runtime<br>Whisper Small, ~460MB<br>CUDA or CPU fallback</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">ffmpeg</div>
+            <div class="box-desc">Capture + encode<br>Auto-installed on first launch<br>Cross-platform</div>
+        </div>
+        <div class="box box-dim">
+            <div class="box-title">Flask</div>
+            <div class="box-desc">Web server on localhost<br>UI + API + Chat<br>System tray icon</div>
+        </div>
+    </div>
+</div>
+
+<div class="insight">
+    <div class="insight-title">Key Insight: Runtime Steering</div>
+    <div class="insight-text">The Scorer rates labels 1-10 and states the human consequence of errors: "your label forced the user to rename files manually." This isn't anthropomorphizing — it's applying targeted pressure that these agentic-trained models respond to. A score of 2/10 with a concrete consequence adjusts the next output more reliably than a paragraph of instructions. Too much negative pressure breaks small models (they collapse into apologizing). One consequence statement is the right calibration.</div>
+</div>
+
+<!-- Data Flow -->
+<h2 style="margin-top: 2.5rem; margin-bottom: 1rem; color: #e8a840;">Data Flow — Single Tape</h2>
+
+<div style="display: flex; flex-direction: column; gap: 0.5rem;">
+    <div class="box box-amber" style="display:block;">
+        <div class="box-title">1. User → Archivist</div>
+        <div class="box-desc">"I have kirtan tapes from our ashram. Anandamayi Ma is on most of them."</div>
+    </div>
+    <div class="box box-green" style="display:block;">
+        <div class="box-title">2. Archivist → Worker (vocabulary)</div>
+        <div class="box-desc">Worker reads skill briefing, generates: "Anandamayi Ma, Om Namah Shivaya, satsang, kirtan, bhajan, pranayama..."</div>
+    </div>
+    <div class="box box-amber" style="display:block;">
+        <div class="box-title">3. Archivist → User</div>
+        <div class="box-desc">"Got it — I've tuned my ears for spiritual recordings. Load the first tape when ready."</div>
+    </div>
+    <div class="box box-blue" style="display:block;">
+        <div class="box-title">4. start_capture → encode → transcribe (with vocabulary priming)</div>
+        <div class="box-desc">ffmpeg records → x264 encodes → Whisper transcribes with "Anandamayi Ma, Om Namah Shivaya..." as initial_prompt</div>
+    </div>
+    <div class="box box-dim" style="display:block;">
+        <div class="box-title">5. Worker → label_tape</div>
+        <div class="box-desc">Reads transcript, generates: {"title": "Kirtan with Anandamayi Ma — Om Namah Shivaya", "tags": ["kirtan", "ashram"]}</div>
+    </div>
+    <div class="box box-red" style="display:block;">
+        <div class="box-title">6. Scorer → score_label</div>
+        <div class="box-desc">Score: 8/10. "Tag '1990s' not in transcript — minor hallucination." No consequence (score ≥ 7).</div>
+    </div>
+    <div class="box box-green" style="display:block;">
+        <div class="box-title">7. save_metadata + save_memory</div>
+        <div class="box-desc">Metadata JSON saved alongside MP4. Vocabulary appended to memory for next session.</div>
+    </div>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#e8a840;"></div> User-facing</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#5090d0;"></div> Framework (smolagents)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#5cb870;"></div> Agent decisions</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#d45050;"></div> Quality enforcement</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#6a6050;"></div> Infrastructure / tools</div>
+</div>
+
+<div class="footer">
+    BeKindRewindAI — Architecture Diagram<br>
+    One model. Three agents. Ten tools. Zero internet.
+</div>
+
+</div>
+</body>
+</html>

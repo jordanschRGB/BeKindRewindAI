@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="chat-container" style="display:flex; flex-direction:column; height:calc(100vh - 130px);">
+
+    <div id="chat-messages" style="flex:1; overflow-y:auto; padding:1rem 0;">
+        <div class="mv-chat-bubble mv-chat-agent">
+            Hey! I'm the Archivist. I run entirely on this computer — nothing you do here ever touches the internet. I'm here to help you save your tapes.<br><br>What kind of tapes are we working with, and what's on them? Knowing a bit about the content helps me understand the audio better — names, languages, topics to listen for.
+        </div>
+    </div>
+
+    <div id="chat-input-area" style="padding:1rem 0; border-top:1px solid var(--mv-border-subtle);">
+        <form onsubmit="sendMessage(event)" style="display:flex; gap:0.75rem;">
+            <input type="text" id="chat-input" placeholder="Type here..."
+                   style="flex:1;" autofocus autocomplete="off">
+            <button type="submit" class="primary">Send</button>
+        </form>
+    </div>
+
+</div>
+
+<style>
+.mv-chat-bubble {
+    max-width: 80%;
+    padding: 1rem 1.25rem;
+    border-radius: var(--mv-radius-lg);
+    margin-bottom: 0.75rem;
+    line-height: 1.5;
+    font-size: 1.05rem;
+    animation: mv-fadeIn 0.3s ease-out;
+}
+
+.mv-chat-agent {
+    background: var(--mv-bg-card);
+    border: 1px solid var(--mv-border-subtle);
+    color: var(--mv-text);
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+}
+
+.mv-chat-user {
+    background: var(--mv-amber);
+    color: var(--mv-bg-deep);
+    align-self: flex-end;
+    margin-left: auto;
+    border-bottom-right-radius: 4px;
+}
+
+.mv-chat-status {
+    text-align: center;
+    color: var(--mv-text-muted);
+    font-size: 0.85rem;
+    padding: 0.5rem;
+    font-style: italic;
+}
+
+#chat-messages {
+    display: flex;
+    flex-direction: column;
+}
+
+#chat-input:focus {
+    border-color: var(--mv-amber);
+    box-shadow: 0 0 0 3px var(--mv-amber-glow);
+}
+</style>
+
+<script>
+const messagesEl = document.getElementById("chat-messages");
+const inputEl = document.getElementById("chat-input");
+
+function addBubble(text, type) {
+    const div = document.createElement("div");
+    div.className = "mv-chat-bubble mv-chat-" + type;
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addStatus(text) {
+    const div = document.createElement("div");
+    div.className = "mv-chat-status";
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function sendMessage(e) {
+    e.preventDefault();
+    const msg = inputEl.value.trim();
+    if (!msg) return;
+
+    addBubble(msg, "user");
+    inputEl.value = "";
+    inputEl.disabled = true;
+
+    fetch("/api/chat", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({message: msg}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        inputEl.disabled = false;
+        inputEl.focus();
+
+        if (data.message) {
+            addBubble(data.message, "agent");
+        }
+
+        if (data.action === "configure") {
+            addStatus("Pipeline configured for " + (data.config?.domain || "general") + " content");
+        }
+        if (data.action === "start_recording") {
+            addStatus("Recording started...");
+        }
+        if (data.action === "stop_recording") {
+            addStatus("Recording stopped.");
+        }
+        if (data.action === "finish") {
+            addStatus("All done! Check your Library for the saved files.");
+        }
+
+        if (data.whisper_prompt) {
+            console.log("Whisper prompt:", data.whisper_prompt);
+        }
+    })
+    .catch(err => {
+        inputEl.disabled = false;
+        inputEl.focus();
+        addBubble("Sorry, something went wrong. Try again?", "agent");
+    });
+}
+
+// Focus input on load
+inputEl.focus();
+</script>
+{% endblock %}

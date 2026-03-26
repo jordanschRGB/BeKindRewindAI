@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mv-hero">
+    <h1>Preserve Your<br>Memories</h1>
+    <p>Digitize your VHS tapes to high-quality video files. No technical knowledge needed.</p>
+
+    <div id="deps-warning" style="display:none;">
+        <div class="mv-card mv-card-warning" style="text-align:left; max-width:500px; margin:0 auto 2rem;">
+            <h2 style="margin-top:0;">First-Time Setup</h2>
+            <p>MemoryVault needs ffmpeg to process video. One click to install.</p>
+            <button class="primary mv-btn-big" id="btn-install-ffmpeg" onclick="installFfmpeg()">Install ffmpeg</button>
+            <p id="deps-progress" style="display:none; margin-top:1rem; font-size:0.9rem;"></p>
+        </div>
+    </div>
+
+    <div id="ready-content" style="display:none;">
+        <div class="mv-status-bar" style="max-width:500px; margin:0 auto 2rem;">
+            <span class="mv-status-dot"></span>
+            <span id="status-text">Connecting...</span>
+        </div>
+
+        <div class="mv-hero-actions">
+            <a href="/setup" class="mv-btn mv-btn-secondary mv-btn-big">Set Up Capture Card</a>
+            <a href="/session" class="mv-btn mv-btn-primary mv-btn-big">Start Recording</a>
+        </div>
+    </div>
+</div>
+
+<script>
+fetch("/api/status").then(r => r.json()).then(data => {
+    if (data.deps && !data.deps.all_ok) {
+        document.getElementById("deps-warning").style.display = "block";
+    } else {
+        document.getElementById("ready-content").style.display = "block";
+        document.getElementById("status-text").textContent =
+            "Ready \u2014 v" + data.version + " \u00b7 " + data.disk_free_gb + " GB free";
+    }
+});
+
+function installFfmpeg() {
+    const btn = document.getElementById("btn-install-ffmpeg");
+    const prog = document.getElementById("deps-progress");
+    btn.setAttribute("aria-busy", "true");
+    btn.textContent = "Downloading...";
+    prog.style.display = "block";
+    prog.textContent = "This may take a minute...";
+    fetch("/api/deps/install-ffmpeg", {method: "POST"}).then(r => r.json()).then(data => {
+        if (data.status === "ok") {
+            prog.textContent = "Installed! Reloading...";
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            btn.removeAttribute("aria-busy");
+            btn.textContent = "Retry";
+            prog.textContent = "Failed: " + data.error;
+        }
+    }).catch(() => {
+        btn.removeAttribute("aria-busy");
+        btn.textContent = "Retry";
+        prog.textContent = "Network error.";
+    });
+}
+</script>
+{% endblock %}

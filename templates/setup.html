@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Device Setup</h1>
+<p>Detect your capture card and audio input.</p>
+
+<button class="primary" id="btn-detect" onclick="detectDevices()">Detect Devices</button>
+
+<div id="devices" style="display:none;">
+    <h3>Video Devices</h3>
+    <div class="mv-card">
+        <select id="video-select" size="4" style="width:100%;"></select>
+    </div>
+
+    <h3>Audio Devices</h3>
+    <div class="mv-card">
+        <select id="audio-select" size="4" style="width:100%;"></select>
+    </div>
+
+    <div style="display:flex; gap:1rem; margin-top:1.5rem; flex-wrap:wrap;">
+        <button class="secondary" onclick="testCapture()">Test Capture (3 sec)</button>
+        <button class="primary" onclick="saveConfig()">Save Config</button>
+    </div>
+
+    <div id="setup-status" class="mv-card" style="display:none; margin-top:1rem;"></div>
+</div>
+
+<script>
+let videoDevices = [];
+let audioDevices = [];
+
+function detectDevices() {
+    document.getElementById("btn-detect").setAttribute("aria-busy", "true");
+    fetch("/api/setup/detect", {method: "POST"}).then(r => r.json()).then(data => {
+        document.getElementById("btn-detect").removeAttribute("aria-busy");
+        videoDevices = data.video_devices || [];
+        audioDevices = data.audio_devices || [];
+        const vs = document.getElementById("video-select");
+        vs.innerHTML = "";
+        videoDevices.forEach((d, i) => { const o = document.createElement("option"); o.value = i; o.textContent = d.label; vs.appendChild(o); });
+        const as = document.getElementById("audio-select");
+        as.innerHTML = "";
+        audioDevices.forEach((d, i) => { const o = document.createElement("option"); o.value = i; o.textContent = d.label; as.appendChild(o); });
+        document.getElementById("devices").style.display = "block";
+    });
+}
+
+function getSelected() {
+    const vi = document.getElementById("video-select").value;
+    const ai = document.getElementById("audio-select").value;
+    return { video: videoDevices[vi]?.config, audio: audioDevices[ai]?.config };
+}
+
+function showStatus(msg, type) {
+    const el = document.getElementById("setup-status");
+    el.style.display = "block";
+    el.className = "mv-card " + (type === "ok" ? "mv-card-success" : type === "error" ? "mv-card-error" : "");
+    el.textContent = msg;
+}
+
+function testCapture() {
+    showStatus("Running test capture...", "");
+    fetch("/api/setup/test", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(getSelected()) })
+        .then(r => r.json()).then(data => {
+            showStatus(data.status === "ok" ? "Test passed! Your devices are working." : "Test failed: " + data.error, data.status);
+        });
+}
+
+function saveConfig() {
+    fetch("/api/setup/save", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(getSelected()) })
+        .then(r => r.json()).then(data => {
+            showStatus(data.status === "ok" ? "Config saved! You're ready to record." : "Error: " + data.error, data.status);
+        });
+}
+</script>
+{% endblock %}

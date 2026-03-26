@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+
+<h2>Smart Features</h2>
+<p>Download AI models for automatic transcription and smart labeling of your tapes.</p>
+
+<div class="mv-card" id="hw-info">
+    <p style="color:var(--mv-text-muted);">Detecting hardware...</p>
+</div>
+
+<div id="models-status" style="margin-top:1rem;">
+    <p style="color:var(--mv-text-muted);">Loading model status...</p>
+</div>
+
+<div id="llama-status" style="margin-top:1rem;"></div>
+
+<script>
+fetch("/api/settings/ai").then(r => r.json()).then(data => {
+    const hw = data.hardware;
+    const hwEl = document.getElementById("hw-info");
+    let hwHtml = "<h3 style='margin-top:0;'>Hardware</h3>";
+    hwHtml += "<p><strong>Platform:</strong> " + hw.platform + " &middot; <strong>Backend:</strong> " + hw.recommended_backend + "</p>";
+    if (hw.gpu_available) {
+        hwHtml += "<p class='status-done'>" + hw.gpu_name + " (" + hw.gpu_vram_mb + " MB VRAM)</p>";
+    } else {
+        hwHtml += "<p style='color:var(--mv-text-muted);'>No GPU detected. AI will run on CPU (slower but works).</p>";
+    }
+    hwEl.innerHTML = hwHtml;
+
+    const llamaEl = document.getElementById("llama-status");
+    if (!data.llama_cpp_installed) {
+        llamaEl.innerHTML = '<div class="mv-card mv-card-warning"><p>llama-cpp-python is needed for AI features.</p>' +
+            '<button class="primary" onclick="installLlama(this)">Install llama-cpp-python</button></div>';
+    } else {
+        llamaEl.innerHTML = '<div class="mv-card mv-card-success"><p>llama-cpp-python installed.</p></div>';
+    }
+
+    const models = data.models;
+    const modelsEl = document.getElementById("models-status");
+    let html = '<div class="mv-card"><table><thead><tr><th>Model</th><th>Purpose</th><th>Size</th><th>Status</th><th></th></tr></thead><tbody>';
+    for (const [key, m] of Object.entries(models)) {
+        const status = m.downloaded ? '<span class="status-done">Ready</span>' : '<span style="color:var(--mv-text-muted);">Not downloaded</span>';
+        let btn = "";
+        if (!m.downloaded) {
+            btn = m.url_available
+                ? '<button class="primary" onclick="downloadModel(\'' + key + '\', this)">Download</button>'
+                : '<span style="color:var(--mv-text-muted); font-size:0.85rem;">GGUF not yet published</span>';
+        }
+        html += "<tr><td><strong>" + m.name + "</strong></td><td>" + m.purpose + "</td><td>" + m.size_mb + " MB</td><td>" + status + "</td><td>" + btn + "</td></tr>";
+    }
+    html += "</tbody></table></div>";
+    modelsEl.innerHTML = html;
+});
+
+function downloadModel(key, btn) {
+    btn.setAttribute("aria-busy", "true");
+    btn.textContent = "Downloading...";
+    fetch("/api/settings/ai/download/" + key, {method: "POST"}).then(r => r.json()).then(data => {
+        if (data.status === "ok") { location.reload(); }
+        else { btn.removeAttribute("aria-busy"); btn.textContent = "Retry"; }
+    });
+}
+
+function installLlama(btn) {
+    btn.setAttribute("aria-busy", "true");
+    btn.textContent = "Installing...";
+    fetch("/api/settings/ai/install-llama", {method: "POST"}).then(r => r.json()).then(data => {
+        if (data.status === "ok") { location.reload(); }
+        else { btn.removeAttribute("aria-busy"); btn.textContent = "Retry"; }
+    });
+}
+</script>
+{% endblock %}
