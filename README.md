@@ -4,6 +4,12 @@ A video recording tool that uses cheap generic capture cards to record home vide
 
 Everything runs on your computer. Nothing touches the internet. I hope it doesn't suck.
 
+Somewhere in a closet, there's a box of tapes nobody's watched since Clinton was president. They're not backed up. They're not in the cloud. They're slowly demagnetizing. One day someone will throw them out because nobody has a VCR and the conversion place wants $30 a tape.
+
+Your grandma's 80th birthday is on one of those tapes. Your kid's first steps might be too.
+
+A $15 capture card, this app, and an afternoon is all it takes. You shouldn't need to know what ffmpeg is to keep your memories.
+
 > Proof of concept. Capture pipeline works on Windows. AI tested against real models. Hardware testing with physical capture cards is next.
 
 ---
