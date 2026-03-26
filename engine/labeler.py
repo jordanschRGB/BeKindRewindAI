@@ -1,8 +1,9 @@
 """Smart labeling — generate title, description, tags from transcript + video frames.
 
 Supports multiple backends:
-1. HTTP API (LM Studio, Ollama, OpenRouter — any OpenAI-compatible endpoint)
-2. Local llama-cpp-python (bundled fallback for offline use)
+1. Ollama-compatible endpoint (rkllama NPU — auto-detected at localhost:8081)
+2. HTTP API (LM Studio, Ollama, OpenRouter — any OpenAI-compatible endpoint)
+3. Local llama-cpp-python (bundled fallback for offline use)
 """
 
 import json
@@ -16,6 +17,10 @@ import urllib.error
 # Set to None to use local llama-cpp-python only
 DEFAULT_API_URL = None  # e.g. "http://100.96.5.85:6942/v1/chat/completions"
 DEFAULT_MODEL = "qwen3.5-4b"
+
+# NPU (rkllama) defaults — Ollama-compatible API on local NPU
+NPU_BASE_URL = "http://localhost:8081"
+NPU_MODEL = "qwen3-0.6b-opt0"
 
 # Config file for user settings
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".memoryvault")
@@ -68,6 +73,66 @@ def get_model_name():
     """Get configured model name."""
     config = load_ai_config()
     return config.get("model", DEFAULT_MODEL)
+
+
+def _check_npu_available(base_url=NPU_BASE_URL):
+    """Check if the NPU (rkllama) server is reachable.
+
+    Returns True if the /api/tags endpoint responds successfully.
+    """
+    try:
+        req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def get_npu_base_url():
+    """Get configured NPU base URL."""
+    config = load_ai_config()
+    return config.get("npu_base_url", NPU_BASE_URL)
+
+
+def get_npu_model():
+    """Get configured NPU model name."""
+    config = load_ai_config()
+    return config.get("npu_model", NPU_MODEL)
+
+
+def _call_npu(messages, base_url=None, model=None):
+    """Call the Ollama-compatible NPU (rkllama) endpoint.
+
+    Uses /api/chat with the Ollama message format.
+
+    Returns:
+        (success: bool, response_text: str|None, error: str|None)
+    """
+    base = base_url or get_npu_base_url()
+    model_name = model or get_npu_model()
+    url = f"{base}/api/chat"
+
+    payload = json.dumps({
+        "model": model_name,
+        "messages": messages,
+        "stream": False,
+    }).encode("utf-8")
+
+    headers = {"Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            text = data["message"]["content"]
+            return True, text, None
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:200]
+        return False, None, f"NPU API error {e.code}: {body}"
+    except urllib.error.URLError as e:
+        return False, None, f"NPU connection failed: {e.reason}"
+    except Exception as e:
+        return False, None, f"NPU call failed: {e}"
 
 
 def _call_api(messages, api_url=None, api_key=None, model=None):
@@ -137,12 +202,29 @@ def _call_local(messages):
 
 
 def _call_llm(messages):
-    """Try API first, fall back to local.
+    """Try NPU first, then OpenAI-compatible API, then local llama-cpp-python.
+
+    Priority:
+    1. NPU/rkllama (Ollama-compatible, localhost:8081) — fastest, no API key needed
+    2. Configured OpenAI-compatible HTTP API (LM Studio, OpenRouter, etc.)
+    3. Local llama-cpp-python (offline fallback)
 
     Returns:
         (success: bool, response_text: str|None, error: str|None)
     """
-    # Try HTTP API first
+    config = load_ai_config()
+
+    # 1. Try NPU if not explicitly disabled
+    npu_disabled = config.get("npu_disabled", False)
+    if not npu_disabled:
+        npu_url = get_npu_base_url()
+        if _check_npu_available(npu_url):
+            success, text, err = _call_npu(messages, base_url=npu_url)
+            if success:
+                return True, text, None
+            # NPU reachable but call failed — fall through
+
+    # 2. Try OpenAI-compatible HTTP API
     api_url = get_api_url()
     if api_url:
         success, text, err = _call_api(messages)
@@ -150,7 +232,7 @@ def _call_llm(messages):
             return True, text, None
         # API failed — fall through to local
 
-    # Try local llama-cpp-python
+    # 3. Try local llama-cpp-python
     return _call_local(messages)
 
 

@@ -43,11 +43,12 @@ def test_generate_labels_no_input():
 
 
 def test_generate_labels_no_backend():
-    """With no API and no local model, should fail gracefully."""
+    """With no API, no NPU, and no local model, should fail gracefully."""
     with patch("engine.labeler.get_api_url", return_value=None):
-        with patch("engine.labeler._call_local", return_value=(False, None, "No model available")):
-            success, labels, err = generate_labels(transcript="hello world")
-            assert success is False
+        with patch("engine.labeler._check_npu_available", return_value=False):
+            with patch("engine.labeler._call_local", return_value=(False, None, "No model available")):
+                success, labels, err = generate_labels(transcript="hello world")
+                assert success is False
 
 
 def test_sample_frames_missing_video():
