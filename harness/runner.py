@@ -295,20 +295,37 @@ def _parse_dream_result(data):
     doubts = data.get("doubts", [])
     looks_fine = data.get("looks_fine", True)
 
-    # Convert legacy to structured: if doubts exist, mark accuracy as below threshold
-    if doubts:
+    # Convert legacy to structured using data-driven heuristics rather than
+    # arbitrary constants. Priority order: confidence → doubts → looks_fine.
+    #
+    # Rationale:
+    #   - confidence < 0.5 → model was very uncertain; treat all scores as poor
+    #   - doubts present → accuracy degrades with each doubt; other dims less affected
+    #   - no doubts + looks_fine=True → near-perfect, but not a 10 (model didn't fully score)
+    if confidence < 0.5:
+        # Model signaled low confidence — all criteria unreliable, use conservative floor
+        scores = {c: 5 for c in GRADING_CRITERIA}
+    elif doubts:
+        # Accuracy hurt by number of doubts; other dims assumed mostly intact.
+        # Cap at 6 (below the accuracy threshold of 7) so any doubt triggers a
+        # FAIL, which is the correct behavior — doubts mean corrections are needed.
+        accuracy = max(4, min(6, 10 - len(doubts)))
         scores = {
-            "accuracy": 5,
+            "accuracy": accuracy,
             "completeness": 8,
-            "label_quality": 7,
-            "hallucination": 9,
+            "label_quality": 8,
+            "hallucination": 8,
         }
+    else:
+        # No doubts and looks_fine=True → near-perfect, slight discount for unscored
+        scores = {c: 9 for c in GRADING_CRITERIA}
+
+    if doubts:
         reasons = {"accuracy": "; ".join(doubts)}
         is_pass = False
         _, failures = check_thresholds(scores)
         consequence = format_failure_consequence(failures, reasons)
     else:
-        scores = {c: 10 for c in GRADING_CRITERIA}
         reasons = {}
         is_pass = True
         consequence = ""
@@ -346,7 +363,30 @@ def step_apply_corrections(transcript, dream_result, vocabulary, feedback=None):
     # Parse vocabulary into a lookup
     vocab_words = [w.strip() for w in vocabulary.split(",") if w.strip()]
 
-    for doubt in dream_result.get("doubts", []):
+    # Use structured feedback to prioritize doubts. Feedback reasons are keyed
+    # by criterion (e.g., "accuracy": "2 names mangled"). When feedback is
+    # present, we extract any vocab-word hints from it and attempt those
+    # corrections first (prepended), then process remaining doubts normally.
+    doubts = list(dream_result.get("doubts", []))
+    if feedback:
+        # Collect criterion-level hints from feedback reasons.
+        # Any feedback reason that references a vocabulary word is treated as a
+        # high-priority doubt and moved to the front of the correction queue.
+        feedback_hints = []
+        for criterion, reason in feedback.items():
+            if not reason:
+                continue
+            reason_lower = reason.lower()
+            for vocab_word in vocab_words:
+                if vocab_word.lower() in reason_lower and reason not in feedback_hints:
+                    feedback_hints.append(reason)
+                    break
+        # Deduplicate: prepend feedback hints, then add doubts not already covered
+        existing_doubts_lower = {d.lower() for d in feedback_hints}
+        remaining = [d for d in doubts if d.lower() not in existing_doubts_lower]
+        doubts = feedback_hints + remaining
+
+    for doubt in doubts:
         doubt_lower = doubt.lower()
         # Check if the doubt mentions a word that matches vocabulary
         for vocab_word in vocab_words:
