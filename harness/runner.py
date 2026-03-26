@@ -304,12 +304,21 @@ def _parse_dream_result(data):
     #   - no doubts + looks_fine=True → near-perfect, but not a 10 (model didn't fully score)
     if confidence < 0.5:
         # Model signaled low confidence — all criteria unreliable, use conservative floor
-        scores = {c: 5 for c in GRADING_CRITERIA}
+        accuracy = 4
+        scores = {c: 4 for c in GRADING_CRITERIA}
     elif doubts:
-        # Accuracy hurt by number of doubts; other dims assumed mostly intact.
-        # Cap at 6 (below the accuracy threshold of 7) so any doubt triggers a
-        # FAIL, which is the correct behavior — doubts mean corrections are needed.
-        accuracy = max(4, min(6, 10 - len(doubts)))
+        # Wider curve to produce scores that distinguish severity and trigger
+        # threshold logic meaningfully (threshold=7, so any doubt must be < 7):
+        #   1 doubt  → 6 (clear fail, just below threshold)
+        #   2 doubts → 5
+        #   3+ doubts → max(3, 8 - len(doubts)), dropping further with each doubt
+        n = len(doubts)
+        if n == 1:
+            accuracy = 6
+        elif n == 2:
+            accuracy = 5
+        else:
+            accuracy = max(3, 8 - n)
         scores = {
             "accuracy": accuracy,
             "completeness": 8,
@@ -317,7 +326,7 @@ def _parse_dream_result(data):
             "hallucination": 8,
         }
     else:
-        # No doubts and looks_fine=True → near-perfect, slight discount for unscored
+        # No doubts and looks_fine=True → 9 (near-perfect, slight discount for unscored)
         scores = {c: 9 for c in GRADING_CRITERIA}
 
     if doubts:

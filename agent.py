@@ -463,13 +463,19 @@ def append_memory(section, entry):
 def append_vocabulary(words):
     """Add discovered vocabulary to memory for future sessions.
 
-    Writes to both flat file (human-readable backup) and RuVector
-    (semantic search with biomimetic decay).
+    Writes to flat file (human-readable backup) and calls rv.store_vocabulary()
+    ONLY — does NOT call append_memory() to avoid double-writing to RuVector.
     """
-    # Flat file
-    append_memory("Vocabulary", words)
+    # Flat file only (no rv.store_memory call here)
+    memory = _load_flat_memory()
+    if not memory:
+        memory = "# Archivist Memory\n\n"
+    if "## Vocabulary" not in memory:
+        memory += "\n## Vocabulary\n"
+    memory += f"- {words}\n"
+    save_memory(memory)
 
-    # RuVector (append_memory already stores, but we add vocabulary-typed metadata)
+    # RuVector: vocabulary-typed store only (not store_memory, not append_memory)
     rv = _get_ruvector()
     if rv:
         try:
@@ -479,10 +485,24 @@ def append_vocabulary(words):
 
 
 def append_session_log(summary):
-    """Log a completed session to both flat file and RuVector."""
-    timestamp = time.strftime("%Y-%m-%d %H:%M")
-    append_memory("Sessions", f"{timestamp}: {summary}")
+    """Log a completed session to flat file and RuVector.
 
+    Writes to flat file directly and calls rv.store_session() ONLY —
+    does NOT call append_memory() to avoid double-writing to RuVector.
+    """
+    timestamp = time.strftime("%Y-%m-%d %H:%M")
+    entry = f"{timestamp}: {summary}"
+
+    # Flat file only (no rv.store_memory call here)
+    memory = _load_flat_memory()
+    if not memory:
+        memory = "# Archivist Memory\n\n"
+    if "## Sessions" not in memory:
+        memory += "\n## Sessions\n"
+    memory += f"- {entry}\n"
+    save_memory(memory)
+
+    # RuVector: session-typed store only (not store_memory, not append_memory)
     rv = _get_ruvector()
     if rv:
         try:
