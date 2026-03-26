@@ -418,16 +418,23 @@ def append_session_log(summary):
     append_memory("Sessions", f"{timestamp}: {summary}")
 
 
-def append_vocabulary_feedback(used_words, unused_words):
-    """Record which vocabulary words were actually used in corrections vs unused.
+FEEDBACK_MAX_ENTRIES = 30  # Cap: only recent behavior is signal
 
-    Stores under '## Vocabulary Feedback' in archivist_memory.md so future
-    sessions can steer the Worker toward historically useful terms and away
-    from noise.
+
+def append_vocabulary_feedback(used_words, unused_words):
+    """Record which vocabulary words were actually used vs noise.
+
+    Stores under '## Vocabulary Feedback' in archivist_memory.md.
+    Capped at FEEDBACK_MAX_ENTRIES most-recent entries — older entries
+    are pruned on each write to prevent unbounded growth.
+
+    Signal definition:
+    - used_words: appeared correctly in transcript or as correction target (priming worked)
+    - unused_words: appeared in NEITHER transcript NOR corrections (genuine noise)
 
     Args:
-        used_words: list of words that appeared in corrections applied
-        unused_words: list of words generated but never matched in transcript
+        used_words: list of words that were useful this session
+        unused_words: list of words that were genuine noise this session
     """
     memory = load_memory()
 
@@ -441,11 +448,29 @@ def append_vocabulary_feedback(used_words, unused_words):
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     used_str = ", ".join(used_words) if used_words else "(none)"
     unused_str = ", ".join(unused_words) if unused_words else "(none)"
-    entry = f"- {timestamp}: used=[{used_str}] noise=[{unused_str}]\n"
+    new_entry = f"- {timestamp}: used=[{used_str}] noise=[{unused_str}]\n"
 
-    # Insert the entry after the section header
+    # Extract existing feedback entries from the section
     idx = memory.index(section_header) + len(section_header)
-    memory = memory[:idx] + "\n" + entry + memory[idx:]
+    before = memory[:idx]
+    rest = memory[idx:]
+    next_section = rest.find("\n## ")
+    if next_section != -1:
+        section_body = rest[:next_section]
+        after = rest[next_section:]
+    else:
+        section_body = rest
+        after = ""
+
+    # Parse existing entries (lines starting with "- ")
+    existing_entries = [line + "\n" for line in section_body.splitlines() if line.strip().startswith("- ")]
+
+    # Prepend new entry, then cap to FEEDBACK_MAX_ENTRIES most recent
+    all_entries = [new_entry] + existing_entries
+    all_entries = all_entries[:FEEDBACK_MAX_ENTRIES]
+
+    new_section_body = "\n" + "".join(all_entries)
+    memory = before + new_section_body + after
 
     save_memory(memory)
 
@@ -453,8 +478,9 @@ def append_vocabulary_feedback(used_words, unused_words):
 def get_vocabulary_feedback(memory_text):
     """Extract vocabulary feedback summary from memory text.
 
-    Returns a dict with 'useful' and 'noise' word lists parsed from the
-    Vocabulary Feedback section, aggregated across all past entries.
+    Reads up to FEEDBACK_MAX_ENTRIES entries (the section is capped at write
+    time, but we enforce it here too for safety). Majority-wins vote determines
+    if a word is useful or noise.
 
     Args:
         memory_text: full content of archivist_memory.md
@@ -473,16 +499,16 @@ def get_vocabulary_feedback(memory_text):
 
     # Extract just the feedback section lines
     start = memory_text.index(section) + len(section)
-    # Find next section (starts with "## ") or end of string
     rest = memory_text[start:]
     next_section = rest.find("\n## ")
     if next_section != -1:
         rest = rest[:next_section]
 
-    for line in rest.splitlines():
-        line = line.strip()
-        if not line.startswith("- "):
-            continue
+    entry_lines = [line.strip() for line in rest.splitlines() if line.strip().startswith("- ")]
+    # Defensive cap: only use FEEDBACK_MAX_ENTRIES most-recent entries
+    entry_lines = entry_lines[:FEEDBACK_MAX_ENTRIES]
+
+    for line in entry_lines:
         # Parse: "- TIMESTAMP: used=[w1, w2] noise=[w3, w4]"
         try:
             used_start = line.index("used=[") + len("used=[")

@@ -96,25 +96,58 @@ def step_greet(memory_text):
     )
 
 
+def _extract_vocabulary_section(memory_text):
+    """Extract only the Vocabulary section from memory, not the full file.
+
+    The Worker does not need Sessions history or Vocabulary Feedback entries —
+    those grow unboundedly and would bloat the 4B model's context on every call.
+    We pass only the raw vocabulary words from prior sessions.
+    """
+    if not memory_text:
+        return ""
+    section_header = "## Vocabulary"
+    if section_header not in memory_text:
+        return ""
+    start = memory_text.index(section_header) + len(section_header)
+    rest = memory_text[start:]
+    # Stop at next section
+    next_section = rest.find("\n## ")
+    if next_section != -1:
+        rest = rest[:next_section]
+    # Extract only the word entries (lines starting with "- ")
+    words = []
+    for line in rest.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            words.append(line[2:].strip())
+    return "\n".join(words) if words else ""
+
+
 def step_generate_vocabulary(user_description, memory_text=""):
     """Worker generates Whisper vocabulary. Reads briefing + user description.
 
-    When feedback history exists in memory, the Worker is told which words
-    have been historically useful (actually corrected something) vs which
-    were noise (generated but never matched). This steers generation toward
-    high-signal terms.
+    Context passed to Worker is strictly controlled:
+    1. WHISPER_BRIEFING (the skill doc — always present)
+    2. Up to last 30 feedback entries as 3 lines of guidance (REPLACES raw history)
+    3. User description
+
+    The Worker does NOT receive the full memory file. It does not need Sessions.
+    Feedback guidance replaces, not appends to, the raw vocabulary history.
+    This keeps the 4B model's context lean across many sessions.
     """
     context = WHISPER_BRIEFING + "\n\n"
-    if memory_text:
-        context += f"Previously learned vocabulary:\n{memory_text}\n\n"
 
-        # Read feedback to guide the Worker
+    if memory_text:
+        # Pass ONLY feedback-derived guidance (3 lines max), not raw history
         feedback = get_vocabulary_feedback(memory_text)
+        guidance_lines = []
         if feedback["useful"]:
-            context += f"Words that have historically HELPED (include similar terms): {', '.join(feedback['useful'])}\n"
+            guidance_lines.append(f"Previously effective vocabulary (prioritize similar terms): {', '.join(feedback['useful'])}")
         if feedback["noise"]:
-            context += f"Words that were generated but NEVER matched anything (deprioritize): {', '.join(feedback['noise'])}\n"
-        context += "\n"
+            guidance_lines.append(f"Previously ineffective vocabulary (deprioritize): {', '.join(feedback['noise'])}")
+        if guidance_lines:
+            context += "Vocabulary guidance from past sessions:\n"
+            context += "\n".join(guidance_lines) + "\n\n"
 
     context += f"User description: {user_description}"
 
@@ -364,24 +397,40 @@ def run_pipeline(user_description, video_path):
         log("corrections", {"applied": corrections})
         transcript = corrected_transcript
 
-    # Log vocabulary feedback: which words were actually used vs generated but idle
+    # Log vocabulary feedback: which words were useful vs genuine noise.
+    #
+    # Signal comes from the transcript directly:
+    # - "useful": word appears correctly in the transcript (priming worked — WIN)
+    # - "noise": word appears in NEITHER the transcript NOR corrections (never relevant)
+    #
+    # Words that Whisper got right because we primed them must land in "useful",
+    # not noise. The old correction-only signal was inverted: it treated
+    # priming successes as noise and would teach the Worker to stop priming
+    # working vocabulary.
     vocab_words = [w.strip() for w in vocab.split(",") if w.strip()] if vocab else []
     used_words = []
     unused_words = []
     if vocab_words:
-        # A word was "used" if it appears as the target in any applied correction
+        # Build a set of all words that appear in the final transcript
+        # (after corrections are applied) — case-insensitive
+        transcript_lower = transcript.lower()
+        # Also collect the targets of any corrections applied
         corrected_targets = set()
         for c in corrections:
-            # correction format: "old → new"
             if " \u2192 " in c:
-                corrected_targets.add(c.split(" \u2192 ")[1].strip())
+                corrected_targets.add(c.split(" \u2192 ")[1].strip().lower())
         for w in vocab_words:
-            if w in corrected_targets:
+            w_lower = w.lower()
+            # A word is "useful" if:
+            # 1. It appears verbatim in the final transcript (priming succeeded), OR
+            # 2. It was the target of a correction (Dreamer caught a mishear)
+            if w_lower in transcript_lower or w_lower in corrected_targets:
                 used_words.append(w)
             else:
+                # Word appears in neither transcript nor corrections — genuine noise
                 unused_words.append(w)
         append_vocabulary_feedback(used_words, unused_words)
-        log("vocabulary_feedback", {"used": used_words, "unused_count": len(unused_words)})
+        log("vocabulary_feedback", {"used": used_words, "unused_words": unused_words})
 
     # 6. Label from (possibly corrected) transcript
     labels, label_err = step_label(transcript)
