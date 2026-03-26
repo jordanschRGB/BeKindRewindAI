@@ -1,46 +1,26 @@
 # BeKindRewindAI
 
-A desktop app that digitizes VHS tapes with a local AI assistant. Nothing leaves your computer.
+A video recording tool that uses cheap generic capture cards to record home video off VHS tapes and audio cassettes. A small local AI model and a lightweight agent harness handle the parts that normally require technical knowledge — ffmpeg, Whisper, file naming and sorting — so the person using it doesn't have to.
 
-> Proof of concept. Capture pipeline works on Windows. AI tested against real models. Hardware testing ongoing.
+Everything runs on your computer. Nothing touches the internet. I hope it doesn't suck.
 
----
-
-## The Problem
-
-You have 20 unlabeled VHS tapes. You digitize them. Now you have 20 files named `tape_001.mp4` through `tape_020.mp4`. Good luck finding Christmas 1995.
-
-Speech recognition (Whisper) can transcribe the audio, but VHS audio is degraded. Whisper mangles proper nouns, foreign words, and anything unusual. "Om Namah Shivaya" becomes "oh no my shivaya."
-
-## The Approach
-
-The user says what's on their tapes. The system generates a vocabulary list — `Om Namah Shivaya, satsang, kirtan, Anandamayi` — and injects it into Whisper's decoder. Transcription accuracy jumps because Whisper now expects those words.
-
-After capture, a labeling pass generates a title: `tape_003.mp4` becomes `Kirtan with Anandamayi — Om Namah Shivaya (1994).mp4`.
-
-Then a review pass — the Dreamer — quietly checks the transcript against known vocabulary, flagging anything that looks like a speech recognition mishear. Corrections are applied deterministically, not generated.
-
-The system gets smarter with each tape. Vocabulary accumulates in a plain `.md` file. Tape 20 has dramatically better transcription than tape 1 — same model, richer input.
+> Proof of concept. Capture pipeline works on Windows. AI tested against real models. Hardware testing with physical capture cards is next.
 
 ---
 
-## Why Multi-Agent Pipelines Usually Get Worse
+## The actual problem with multi-agent pipelines
 
-Everyone knows how agents work. Nobody talks about why chaining them usually produces worse output than a single call.
+Every pass through a model loses detail. Specific names, dates, places — gone first, because they're the rarest tokens. Two passes and "Anandamayi Ma leading kirtan at the Ashland ashram in 1994" becomes "Spiritual Chanting Session."
 
-Every pass through a model is a lossy compression. Detail is lost. Output trends toward generic. "Anandamayi Ma leading kirtan at the Ashland ashram in 1994" becomes "Spiritual Chanting Session" after enough passes. The specific details — the name, the place, the year — compress away first because they're the least common tokens.
+Most multi-agent setups make this worse. Agent A generates something. Agent B "improves" it. But B can't add information it doesn't have — it can only smooth toward average. A correction agent that rewrites a transcript produces something more generic than what Whisper gave you. Confidently wrong is worse than roughly right.
 
-This is why "AI improves AI output" pipelines degrade. Each step inherits and amplifies the previous step's errors. A correction agent that rewrites a transcript can only compress — it can't add information it doesn't have. It confidently "fixes" correct words into wrong ones.
+The rule here: each step has to convert information from one type to another. Audio to text. Text to title. Transcript to doubt signals. If input and output are the same type, the step compresses toward the mean. Cut it.
 
-**The rule this project follows: every agent step must convert information from one type to another. If input and output are the same type, the step can only compress toward the mean. Delete it.**
+The Dreamer works because its output (doubt signals) is a different type than its input (transcript + vocabulary). It can't make things worse because it doesn't change anything — it just flags. The Archivist decides whether to act, and only applies corrections where the doubt matches known vocabulary. Deterministic string replacement, not model generation.
 
-The one exception: a validator that outputs a binary signal (good/bad) or doubt signals (the Dreamer pattern). That's a useful compression — from a full document to a flag. It can't make things worse because it doesn't change anything.
+## Agents
 
-## What an Agent Actually Is
-
-An agent is: **model + identity + context + tools.**
-
-Everything else is plumbing. Same model, same weights — different identity and context produce fundamentally different behavior. This project uses one model (Qwen 3.5 4B) in three roles:
+An agent is model + identity + context + tools. That's it. Same model, same weights — different identity and context produce different behavior. One model, three roles:
 
 | Agent | Identity | Context | Tools | Output type |
 |-------|----------|---------|-------|-------------|
