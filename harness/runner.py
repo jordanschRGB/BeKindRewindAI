@@ -41,8 +41,25 @@ WORKER_LABEL_PROMPT = """Generate a title, description, and tags for this VHS ta
 Respond with ONLY a JSON object: {"title": "...", "description": "...", "tags": ["..."]}
 Keep the title under 60 characters. Ground everything in the transcript — no hallucinated names."""
 
-SCORER_PROMPT = """Rate this label 1-10. If below 7, state what the user would have to do because of the error.
-Respond with ONLY JSON: {"score": N, "reason": "...", "consequence": "..." or null}"""
+DREAMER_PROMPT = """You are the Dreamer. You are quietly reviewing a transcript before sleep.
+
+You have two things:
+1. A vocabulary list of KNOWN CORRECT words (names, terms, phrases)
+2. A transcript from speech recognition that may have mangled some of these words
+
+Speech recognition often mishears foreign names and terms. For example:
+- "Anandamayi Ma" might appear as "ananda my" or "ananda mai"
+- "satsang" might appear as "sot song" or "sat sang"
+- "Om Namah Shivaya" might appear as "oh nama shivaya"
+
+Look at each word in the vocabulary list. Is there something in the transcript
+that SOUNDS LIKE that word but is spelled differently? That's a mishear.
+
+Respond with ONLY JSON:
+{"confidence": 0.0-1.0, "doubts": ["ananda my might be Anandamayi Ma", "sot song might be satsang"], "looks_fine": false}
+
+If every vocabulary word appears correctly or doesn't appear at all, respond:
+{"confidence": 1.0, "doubts": [], "looks_fine": true}"""
 
 
 def _call_llm(system_prompt, user_content):
@@ -151,51 +168,97 @@ def step_label(transcript):
     return None, "LLM unavailable"
 
 
-def step_score(transcript, labels):
-    """Scorer rates the label. Returns (score, reason, consequence)."""
-    labels_json = json.dumps(labels)
-    success, score_data, err = scorer_rate_output(transcript, labels_json)
-    if success:
-        return score_data["score"], score_data["reason"], score_data.get("consequence")
-    return 5, "Scoring unavailable", None  # Default pass if scorer fails
+def step_dream(transcript, vocabulary):
+    """Dreamer reviews transcript against known vocabulary. No tools. Just notices.
+
+    In: transcript + known vocabulary (two different representations)
+    Out: doubt signals (different type — useful compression)
+    Changes nothing. Returns observations only.
+    """
+    if not vocabulary:
+        return {"confidence": 1.0, "doubts": [], "looks_fine": True}
+
+    response = _call_llm(
+        DREAMER_PROMPT,
+        f"Known vocabulary (these are definitely correct):\n{vocabulary}\n\n"
+        f"Transcript to review:\n{transcript}"
+    )
+
+    if not response:
+        return {"confidence": 1.0, "doubts": [], "looks_fine": True}
+
+    # Parse dreamer output
+    text = response.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
+
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(text[start:end])
+            return {
+                "confidence": float(data.get("confidence", 1.0)),
+                "doubts": data.get("doubts", []),
+                "looks_fine": data.get("looks_fine", True),
+            }
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return {"confidence": 1.0, "doubts": [], "looks_fine": True}
 
 
-def step_label_with_retry(transcript, max_retries=2):
-    """Label → Score → Retry loop. Harness controls the loop, not the model."""
-    last_feedback = ""
+def step_apply_corrections(transcript, dream_result, vocabulary):
+    """Archivist decides: apply corrections ONLY where dreamer doubt + memory align.
 
-    for attempt in range(max_retries + 1):
-        # Label
-        prompt_extra = ""
-        if last_feedback:
-            prompt_extra = f"\n\nPrevious attempt scored poorly: {last_feedback}\nDo better this time."
+    This is deterministic string replacement, not model generation.
+    The model flagged the doubt. Python applies the fix. No creative rewriting.
+    """
+    if dream_result.get("looks_fine", True) or not dream_result.get("doubts"):
+        return transcript, []
 
-        response = _call_llm(
-            WORKER_LABEL_PROMPT,
-            f"Transcript:\n{transcript}{prompt_extra}"
-        )
+    corrections_applied = []
+    corrected = transcript
 
-        if not response:
-            return None, "LLM unavailable"
+    # Parse vocabulary into a lookup
+    vocab_words = [w.strip() for w in vocabulary.split(",") if w.strip()]
 
-        labels = _parse_labels(response)
-        if not labels:
-            last_feedback = "Output was not valid JSON."
-            continue
+    for doubt in dream_result.get("doubts", []):
+        doubt_lower = doubt.lower()
+        # Check if the doubt mentions a word that matches vocabulary
+        for vocab_word in vocab_words:
+            vl = vocab_word.lower()
+            # Look for "X might be Y" pattern
+            if vl in doubt_lower and ("might be" in doubt_lower or "could be" in doubt_lower or "should be" in doubt_lower):
+                # Find the mangled version in the transcript
+                # Simple heuristic: look for words that are phonetically close
+                for transcript_word in corrected.split():
+                    tw = transcript_word.strip(".,!?;:'\"").lower()
+                    # If the transcript word is similar-ish to the vocab word but not exact
+                    if tw != vl and _is_phonetically_close(tw, vl):
+                        old = transcript_word.strip(".,!?;:'\"")
+                        corrected = corrected.replace(old, vocab_word)
+                        corrections_applied.append(f"{old} → {vocab_word}")
+                        break
 
-        # Score
-        score, reason, consequence = step_score(transcript, labels)
+    return corrected, corrections_applied
 
-        if score >= 7:
-            return labels, None
 
-        # Build feedback for retry
-        last_feedback = f"Score {score}/10. {reason}"
-        if consequence:
-            last_feedback += f" Consequence: {consequence}"
-
-    # After retries, return best effort
-    return labels, f"Best score after {max_retries + 1} attempts: {score}/10"
+def _is_phonetically_close(a, b):
+    """Quick check if two words are phonetically similar. Not perfect, doesn't need to be."""
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return False
+    # Share first 3+ characters
+    if len(a) >= 3 and len(b) >= 3 and a[:3] == b[:3]:
+        return True
+    # One contains most of the other
+    if len(a) > 3 and len(b) > 3:
+        shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+        if shorter in longer:
+            return True
+    return False
 
 
 def step_save(base_name, video_path, transcript, labels, vocabulary):
@@ -275,8 +338,18 @@ def run_pipeline(user_description, video_path):
         return results
     log("transcribe", {"length": len(transcript), "sample": transcript[:100]})
 
-    # 4. Label with retry loop (Worker + Scorer, harness controls retries)
-    labels, label_err = step_label_with_retry(transcript)
+    # 4. Dreamer reviews transcript (no tools, just notices)
+    dream = step_dream(transcript, vocab)
+    log("dream", {"confidence": dream["confidence"], "doubts": dream["doubts"], "looks_fine": dream["looks_fine"]})
+
+    # 5. Archivist applies corrections (only where doubt + memory align)
+    corrected_transcript, corrections = step_apply_corrections(transcript, dream, vocab)
+    if corrections:
+        log("corrections", {"applied": corrections})
+        transcript = corrected_transcript
+
+    # 6. Label from (possibly corrected) transcript
+    labels, label_err = step_label(transcript)
     log("label", {"labels": labels, "error": label_err})
 
     # 5. Save metadata
