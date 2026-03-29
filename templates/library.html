@@ -3,9 +3,18 @@
 <h1>Library</h1>
 <p>All your captured tapes in one place.</p>
 
+<div class="mv-card" style="margin-bottom:1rem;">
+    <div style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap;">
+        <input type="text" id="search-input" placeholder="Search tapes..." style="flex:1; min-width:200px;">
+        <button class="mv-btn mv-btn-secondary" onclick="loadLibrary()">Search</button>
+        <button class="mv-btn mv-btn-secondary" onclick="exportLibrary('csv')">Export CSV</button>
+        <button class="mv-btn mv-btn-secondary" onclick="exportLibrary('json')">Export JSON</button>
+    </div>
+</div>
+
 <div class="mv-card">
     <table>
-        <thead><tr><th>Name</th><th>Duration</th><th>Size</th><th>Date</th><th>Status</th></tr></thead>
+        <thead><tr><th>Title</th><th>Duration</th><th>Size</th><th>Date</th><th>Tags</th><th>Status</th></tr></thead>
         <tbody id="library-list"></tbody>
     </table>
     <div id="library-empty" class="mv-empty" style="display:none;">
@@ -13,21 +22,49 @@
         <p>No tapes captured yet.</p>
         <a href="/session" class="mv-btn mv-btn-primary" style="margin-top:1rem;">Start Recording</a>
     </div>
+    <div id="library-search-empty" class="mv-empty" style="display:none;">
+        <p>No tapes match your search.</p>
+    </div>
 </div>
 
 <script>
-fetch("/api/library").then(r => r.json()).then(data => {
-    const tapes = data.tapes || [];
-    if (!tapes.length) { document.getElementById("library-empty").style.display = "block"; return; }
-    const tbody = document.getElementById("library-list");
-    tapes.forEach(t => {
-        const tr = document.createElement("tr");
-        const dur = t.duration_seconds ? Math.floor(t.duration_seconds/60) + " min" : "-";
-        const size = t.size_bytes ? (t.size_bytes/1024/1024).toFixed(0) + " MB" : "-";
-        const valid = t.validation?.not_blank ? "OK" : "Check";
-        tr.innerHTML = "<td>" + t.filename + "</td><td>" + dur + "</td><td>" + size + "</td><td>" + (t.captured_at||"-") + "</td><td>" + valid + "</td>";
-        tbody.appendChild(tr);
+function loadLibrary() {
+    const search = document.getElementById("search-input").value;
+    const params = new URLSearchParams();
+    if (search) params.append("search", search);
+    const url = "/api/library" + (params.toString() ? "?" + params.toString() : "");
+    fetch(url).then(r => r.json()).then(data => {
+        const tapes = data.tapes || [];
+        const tbody = document.getElementById("library-list");
+        tbody.innerHTML = "";
+        if (!tapes.length) {
+            document.getElementById("library-empty").style.display = search ? "none" : "block";
+            document.getElementById("library-search-empty").style.display = search ? "block" : "none";
+            return;
+        }
+        document.getElementById("library-empty").style.display = "none";
+        document.getElementById("library-search-empty").style.display = "none";
+        tapes.forEach(t => {
+            const tr = document.createElement("tr");
+            const dur = t.duration_seconds ? Math.floor(t.duration_seconds/60) + " min" : "-";
+            const size = t.size_bytes ? (t.size_bytes/1024/1024).toFixed(0) + " MB" : "-";
+            const title = t.labels?.title || t.filename || "-";
+            const tags = t.labels?.tags?.join(", ") || "-";
+            const valid = t.validation?.not_blank ? "OK" : "Check";
+            tr.innerHTML = "<td>" + title + "</td><td>" + dur + "</td><td>" + size + "</td><td>" + (t.captured_at||"-") + "</td><td>" + tags + "</td><td>" + valid + "</td>";
+            tbody.appendChild(tr);
+        });
     });
+}
+
+function exportLibrary(format) {
+    window.location.href = "/api/library/export?format=" + format;
+}
+
+document.getElementById("search-input").addEventListener("keypress", function(e) {
+    if (e.key === "Enter") loadLibrary();
 });
+
+loadLibrary();
 </script>
 {% endblock %}
