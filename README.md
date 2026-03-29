@@ -105,6 +105,114 @@ Browser opens to `http://localhost:5000`.
 
 ---
 
+## AI Model Setup (Qwen 3.5 4B)
+
+The AI features use **Qwen 3.5 4B**, a small fast model that runs on your computer. You have two options:
+
+### Option A: Use LM Studio (Recommended)
+
+LM Studio is the easiest way to run the model locally.
+
+**Step 1: Download LM Studio**
+- Go to https://lmstudio.ai/download
+- Download the version for your computer (Windows/Mac/Linux)
+- Install it
+
+**Step 2: Download the model in LM Studio**
+- Open LM Studio
+- In the left sidebar, click **Search**
+- Type `Qwen3.5-4B`
+- Find the **Qwen3.5-4B-GGUF** model by unsloth
+- Click **Download**
+- Wait for it to finish (about 2.5 GB)
+
+**Step 3: Start LM Studio server**
+- In LM Studio, click the **Server** icon (bottom left)
+- Set **Port** to `6942`
+- Click **Start Server**
+- Keep LM Studio running while using the app
+
+**Step 4: Configure the app**
+- Open the app in your browser (http://localhost:5000)
+- Go to **Settings**
+- Find **Smart Features**
+- Leave **API URL** empty (this uses local model)
+- The model should show as "Ready"
+
+**If you see "Qwen model not downloaded":**
+- Make sure LM Studio is running with the server started
+- Check that the port is `6942`
+- Click **Settings → Settings** in the app and verify llama-cpp-python is installed
+
+---
+
+### Option B: Use Ollama
+
+**Step 1: Install Ollama**
+- Go to https://ollama.com/download
+- Download and install for your computer
+
+**Step 2: Download the model**
+Open a terminal and run:
+```bash
+ollama pull qwen3.5:4b
+```
+
+**Step 3: Start Ollama server**
+```bash
+ollama serve
+```
+Keep this running.
+
+**Step 4: Configure the app**
+- Open the app
+- Go to **Settings**
+- Set **API URL** to `http://localhost:11434/v1`
+- Set **Model** to `qwen3.5:4b`
+
+---
+
+### Option C: Use OpenRouter (Cloud, Requires API Key)
+
+**Step 1: Get an API key**
+- Go to https://openrouter.ai/keys
+- Create an account and get an API key
+
+**Step 2: Configure the app**
+- Open the app
+- Go to **Settings**
+- Set **API URL** to `https://openrouter.ai/api/v1`
+- Set **API Key** to your OpenRouter key
+- Set **Model** to `qwen3.5-4b`
+
+---
+
+### Troubleshooting
+
+**Error: "No API endpoint configured" and "Qwen model not downloaded"**
+- You have neither an API URL set nor the local model downloaded
+- Either start LM Studio server, or set up Ollama/OpenRouter
+
+**Error: "Connection failed"**
+- Check that the server (LM Studio or Ollama) is running
+- Check the port number matches (default: 6942 for LM Studio, 11434 for Ollama)
+
+**Error: "API error 401"**
+- Your API key is wrong or missing
+- Go to Settings and check your API key
+
+**Slow performance on CPU**
+- The model runs on CPU if you have no GPU
+- This is normal and works, but is slower
+- For faster performance, use a GPU computer or cloud API
+
+**Model output is bad quality**
+- Try a lower temperature in advanced settings
+- Make sure the transcript is accurate
+- The model does better with clear audio
+
+---
+
 ## Tech Stack & Credits
 
 | Component | Project | License |
