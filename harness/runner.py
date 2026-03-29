@@ -418,13 +418,15 @@ def step_apply_corrections(transcript, dream_result, vocabulary, feedback=None):
 
 def _is_phonetically_close(a, b):
     """Quick check if two words are phonetically similar. Not perfect, doesn't need to be."""
+    import re
     a, b = a.lower(), b.lower()
     if a == b:
         return False
-    # Share first 3+ characters
+    timestamp_pattern = re.compile(r'^\d+\.\d+-\d+\.\d+:$')
+    if timestamp_pattern.match(a) or timestamp_pattern.match(b):
+        return False
     if len(a) >= 3 and len(b) >= 3 and a[:3] == b[:3]:
         return True
-    # One contains most of the other
     if len(a) > 3 and len(b) > 3:
         shorter, longer = (a, b) if len(a) < len(b) else (b, a)
         if shorter in longer:

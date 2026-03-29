@@ -101,6 +101,7 @@ def transcribe_audio(wav_path, model_size=None):
 
     Returns:
         (success: bool, transcript: str|None, error: str|None)
+        transcript is a string with timestamps: "0.0-1.5: speech text"
     """
     if not os.path.exists(wav_path):
         return False, None, f"Audio file not found: {wav_path}"
@@ -112,16 +113,18 @@ def transcribe_audio(wav_path, model_size=None):
         model = get_whisper_model(model_size)
         segments, info = model.transcribe(wav_path, beam_size=5)
 
-        # Collect all segments into full transcript
         lines = []
         for segment in segments:
-            lines.append(segment.text.strip())
+            text = segment.text.strip()
+            if text:
+                start = segment.start
+                end = segment.end
+                lines.append(f"{start:.1f}-{end:.1f}: {text}")
+
+        if not lines:
+            return True, "", None
 
         transcript = " ".join(lines)
-
-        if not transcript.strip():
-            return True, "", None  # Valid but empty (no speech detected)
-
         return True, transcript.strip(), None
     except Exception as e:
         return False, None, f"Transcription failed: {e}"
