@@ -164,7 +164,11 @@ def transcribe_video_file(video_path: str, whisper_vocabulary: str) -> str:
             initial_prompt=whisper_vocabulary if whisper_vocabulary else None,
         )
 
-        lines = [seg.text.strip() for seg in segments]
+        lines = []
+        for seg in segments:
+            text = seg.text.strip()
+            if text:
+                lines.append(f"{seg.start:.1f}-{seg.end:.1f}: {text}")
         transcript = " ".join(lines).strip()
 
         return json.dumps({
