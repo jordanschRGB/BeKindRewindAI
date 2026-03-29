@@ -166,6 +166,55 @@ def library_export():
     return data, 200, {"Content-Type": "application/json"}
 
 
+@api_bp.route("/library/<tape_id>", methods=["PATCH"])
+def library_update(tape_id):
+    from library import get_tape
+    output_dir = current_app.config["OUTPUT_DIR"]
+    tape = get_tape(output_dir, tape_id)
+    if tape is None:
+        return jsonify({"error": "Tape not found", "code": "NOT_FOUND"}), 404
+
+    data = request.get_json() or {}
+    if "keep" in data:
+        from cleanup import set_tape_keep
+        success, err = set_tape_keep(output_dir, tape_id, bool(data["keep"]))
+        if not success:
+            return jsonify({"error": err, "code": "UPDATE_FAILED"}), 400
+
+    return jsonify({"status": "ok", "updated": tape_id})
+
+
+@api_bp.route("/storage")
+def storage_stats():
+    from cleanup import get_storage_stats
+    output_dir = current_app.config["OUTPUT_DIR"]
+    stats = get_storage_stats(output_dir)
+    return jsonify(stats)
+
+
+@api_bp.route("/cleanup", methods=["POST"])
+def cleanup_run():
+    from cleanup import cleanup_old_recordings
+    output_dir = current_app.config["OUTPUT_DIR"]
+    data = request.get_json() or {}
+    days = data.get("days")
+    if days is not None:
+        days = int(days)
+    dry_run = data.get("dry_run", True)
+    result = cleanup_old_recordings(output_dir, days=days, dry_run=dry_run)
+    return jsonify(result)
+
+
+@api_bp.route("/cleanup/orphans", methods=["POST"])
+def cleanup_orphans():
+    from cleanup import cleanup_orphaned_temp_files
+    output_dir = current_app.config["OUTPUT_DIR"]
+    data = request.get_json() or {}
+    dry_run = data.get("dry_run", True)
+    result = cleanup_orphaned_temp_files(output_dir, dry_run=dry_run)
+    return jsonify(result)
+
+
 @api_bp.route("/settings/ai")
 def ai_settings():
     from engine.inference import get_download_status, detect_hardware, ensure_llama_cpp
