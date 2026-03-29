@@ -35,7 +35,7 @@ def setup_detect():
     from engine.devices import detect_video_devices, detect_audio_devices, check_ffmpeg
     has_ffmpeg = check_ffmpeg()
     if not has_ffmpeg:
-        return jsonify({"error": "ffmpeg not found"}), 500
+        return jsonify({"error": "ffmpeg not found", "code": "FFMPEG_NOT_FOUND"}), 500
     video = detect_video_devices()
     audio = detect_audio_devices()
     return jsonify({
@@ -49,7 +49,7 @@ def setup_save():
     import json as json_mod
     data = request.get_json()
     if not data or "video" not in data or "audio" not in data:
-        return jsonify({"error": "video and audio config required"}), 400
+        return jsonify({"error": "video and audio config required", "code": "INVALID_CONFIG"}), 400
     config_dir = current_app.config["CONFIG_DIR"]
     os.makedirs(config_dir, exist_ok=True)
     config_path = os.path.join(config_dir, "config.json")
@@ -62,13 +62,13 @@ def setup_save():
 def setup_test():
     data = request.get_json()
     if not data or "video" not in data or "audio" not in data:
-        return jsonify({"error": "video and audio config required"}), 400
+        return jsonify({"error": "video and audio config required", "code": "INVALID_CONFIG"}), 400
     from engine.devices import test_capture
     success, err = test_capture(data["video"], data["audio"])
     if success:
         return jsonify({"status": "ok"})
     else:
-        return jsonify({"status": "error", "error": err}), 400
+        return jsonify({"status": "error", "error": err, "code": "CAPTURE_TEST_FAILED"}), 400
 
 
 @api_bp.route("/session/start", methods=["POST"])
@@ -86,7 +86,7 @@ def session_start():
 @api_bp.route("/session/current")
 def session_current():
     if _session is None:
-        return jsonify({"error": "No active session"}), 404
+        return jsonify({"error": "No active session", "code": "NO_SESSION"}), 404
     return jsonify(_session.to_dict())
 
 
@@ -94,14 +94,14 @@ def session_current():
 def session_next():
     global _session
     if _session is None:
-        return jsonify({"error": "No active session"}), 404
+        return jsonify({"error": "No active session", "code": "NO_SESSION"}), 404
     if _session.state.value not in ("waiting",):
-        return jsonify({"error": f"Cannot advance — state is {_session.state.value}"}), 400
+        return jsonify({"error": f"Cannot advance — state is {_session.state.value}", "code": "INVALID_STATE"}), 400
     import json as json_mod
     config_dir = current_app.config["CONFIG_DIR"]
     config_path = os.path.join(config_dir, "config.json")
     if not os.path.exists(config_path):
-        return jsonify({"error": "No device config. Run setup first."}), 400
+        return jsonify({"error": "No device config. Run setup first.", "code": "NO_CONFIG"}), 400
     with open(config_path) as f:
         config = json_mod.load(f)
     _session.advance()
@@ -114,7 +114,7 @@ def session_next():
 def session_stop():
     global _session
     if _session is None:
-        return jsonify({"error": "No active session"}), 404
+        return jsonify({"error": "No active session", "code": "NO_SESSION"}), 404
     from pipeline import stop_recording
     stop_recording(_session)
     return jsonify(_session.to_dict())
@@ -124,8 +124,11 @@ def session_stop():
 def library_list():
     from library import list_tapes
     output_dir = current_app.config["OUTPUT_DIR"]
-    tapes = list_tapes(output_dir)
-    return jsonify({"tapes": tapes})
+    limit = request.args.get("limit", type=int)
+    offset = request.args.get("offset", type=int, default=0)
+    search = request.args.get("search", type=str, default=None)
+    tapes = list_tapes(output_dir, limit=limit, offset=offset, search=search)
+    return jsonify({"tapes": tapes, "offset": offset, "limit": limit})
 
 
 @api_bp.route("/library/<tape_id>")
@@ -134,8 +137,33 @@ def library_get(tape_id):
     output_dir = current_app.config["OUTPUT_DIR"]
     tape = get_tape(output_dir, tape_id)
     if tape is None:
-        return jsonify({"error": "Tape not found"}), 404
+        return jsonify({"error": "Tape not found", "code": "NOT_FOUND"}), 404
     return jsonify(tape)
+
+
+@api_bp.route("/library/<tape_id>", methods=["DELETE"])
+def library_delete(tape_id):
+    from library import delete_tape
+    output_dir = current_app.config["OUTPUT_DIR"]
+    success, err = delete_tape(output_dir, tape_id)
+    if not success:
+        return jsonify({"error": err, "code": "DELETE_FAILED"}), 400
+    return jsonify({"status": "ok", "deleted": tape_id})
+
+
+@api_bp.route("/library/export")
+def library_export():
+    format_type = request.args.get("format", "json")
+    if format_type not in ("json", "csv"):
+        return jsonify({"error": "Format must be json or csv", "code": "INVALID_FORMAT"}), 400
+    from library import export_library
+    output_dir = current_app.config["OUTPUT_DIR"]
+    success, data, err = export_library(output_dir, format_type)
+    if not success:
+        return jsonify({"error": err, "code": "EXPORT_FAILED"}), 500
+    if format_type == "csv":
+        return data, 200, {"Content-Type": "text/csv"}
+    return data, 200, {"Content-Type": "application/json"}
 
 
 @api_bp.route("/settings/ai")
@@ -206,7 +234,7 @@ def chat():
     message = data.get("message", "")
 
     if not message.strip():
-        return jsonify({"error": "Empty message"}), 400
+        return jsonify({"error": "Empty message", "code": "EMPTY_MESSAGE"}), 400
 
     result = _agent.chat(message)
     result["whisper_prompt"] = _agent.get_whisper_prompt()
