@@ -62,12 +62,16 @@ def start_capture(video_device: str, audio_device: str, output_name: str) -> str
     IMPORTANT: Always confirm with the user before calling this.
 
     Args:
-        video_device: Video device identifier (e.g. "video=Iriun Webcam")
-        audio_device: Audio device identifier (e.g. "audio=Microphone (HyperX)")
+        video_device: Video device identifier (e.g. "video=Iriun Webcam" on Windows,
+                      "/dev/video0" on Linux, "0" on macOS)
+        audio_device: Audio device identifier (e.g. "audio=Microphone (HyperX)" on Windows,
+                      "default" or "hw:1,0" on Linux, "1" on macOS)
         output_name: Base name for the output file (e.g. "tape_001")
     """
     import platform
     from engine.capture import Recorder
+
+    SYSTEM = platform.system()
 
     output_dir = os.path.join(os.path.expanduser("~"), "Videos", "MemoryVault")
     os.makedirs(output_dir, exist_ok=True)
@@ -75,9 +79,32 @@ def start_capture(video_device: str, audio_device: str, output_name: str) -> str
     timestamp = time.strftime("%Y-%m-%d_%H%M%S")
     raw_path = os.path.join(output_dir, f"{output_name}_{timestamp}_raw.mkv")
 
-    fmt = "dshow" if platform.system() == "Windows" else "v4l2"
-    video_cfg = {"format": fmt, "device": video_device}
-    audio_cfg = {"format": fmt, "device": audio_device}
+    if SYSTEM == "Windows":
+        video_cfg = {"format": "dshow", "device": video_device}
+        audio_cfg = {"format": "dshow", "device": audio_device}
+    elif SYSTEM == "Darwin":
+        video_cfg = {"format": "avfoundation", "device": video_device}
+        audio_cfg = {"format": "avfoundation", "device": audio_device}
+    else:
+        video_cfg = {"format": "v4l2", "device": video_device}
+        if audio_device.startswith("hw:"):
+            audio_cfg = {"format": "alsa", "device": audio_device}
+        else:
+            audio_cfg = {"format": "pulse", "device": audio_device}
+
+    if SYSTEM == "Linux":
+        if not os.path.exists(video_device):
+            return json.dumps({
+                "status": "error",
+                "error": f"Video device not found: {video_device}. Run 'bekindrewind check-hardware' to see available devices.",
+                "code": "DEVICE_NOT_FOUND",
+            })
+        if not os.path.exists(f"/sys/class/video4linux/{os.path.basename(video_device)}/name"):
+            return json.dumps({
+                "status": "error",
+                "error": f"Video device path is not a valid video4linux device: {video_device}",
+                "code": "INVALID_DEVICE",
+            })
 
     recorder = Recorder(video_cfg, audio_cfg, raw_path)
     recorder.start()

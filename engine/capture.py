@@ -74,7 +74,7 @@ def _build_capture_cmd(
 
 # ── Signal Check ──────────────────────────────────────────────────────────────
 
-def check_video_signal(video_cfg: dict, audio_cfg: dict) -> bool:
+def check_video_signal(video_cfg: dict, audio_cfg: dict) -> tuple:
     """
     Sample 3 seconds to detect whether there is an actual video signal.
 
@@ -83,8 +83,7 @@ def check_video_signal(video_cfg: dict, audio_cfg: dict) -> bool:
         audio_cfg: dict with 'format' and 'device' keys.
 
     Returns:
-        True if a signal appears to be present, False if blank/missing.
-        Returns True on timeout (assume OK; real capture will reveal issues).
+        (ok: bool, message: str) - ok is True if signal present, message explains the result.
     """
     tmp = tempfile.NamedTemporaryFile(suffix=".mkv", delete=False)
     tmp.close()
@@ -92,13 +91,13 @@ def check_video_signal(video_cfg: dict, audio_cfg: dict) -> bool:
     cmd = _build_capture_cmd(video_cfg, audio_cfg, tmp.name, duration=3)
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     except subprocess.TimeoutExpired:
         try:
             os.unlink(tmp.name)
         except OSError:
             pass
-        return True  # Timeout treated as signal-present
+        return True, "timeout - treating as signal present"
 
     file_size = 0
     try:
@@ -111,8 +110,14 @@ def check_video_signal(video_cfg: dict, audio_cfg: dict) -> bool:
     except OSError:
         pass
 
-    # Empty or tiny file means no real signal
-    return file_size >= 1000
+    if file_size < 1000:
+        return False, f"no signal detected (file size: {file_size} bytes)"
+
+    if result.returncode != 0 and result.stderr:
+        if "Invalid" in result.stderr or "cannot" in result.stderr.lower():
+            return False, f"device error: {result.stderr.strip().splitlines()[-1] if result.stderr.strip() else 'unknown error'}"
+
+    return True, f"signal OK ({file_size} bytes)"
 
 
 # ── Recorder ─────────────────────────────────────────────────────────────────
