@@ -432,7 +432,104 @@ def _is_phonetically_close(a, b):
     return False
 
 
-def step_save(base_name, video_path, transcript, labels, vocabulary):
+def extract_topic_from_filename(video_path):
+    """Extract domain keywords from a video filename to bootstrap vocabulary.
+
+    Parses the filename for recognizable domain terms (spiritual, family, music,
+    sports, church) and returns them as a comma-separated string to boost
+    vocabulary generation when the user hasn't provided a description.
+
+    Args:
+        video_path: Path to the video file
+
+    Returns:
+        str: comma-separated keywords extracted from filename, or empty string
+    """
+    import re
+    filename = os.path.basename(video_path).lower()
+    filename = os.path.splitext(filename)[0]
+    filename = re.sub(r'[_\-\.]', ' ', filename)
+
+    domain_terms = {
+        "spiritual": ["satsang", "kirtan", "meditation", "spiritual", "ashram", "yoga", "mantra",
+                       "ceremony", "puja", "bhajan", "prayer", "chakra", "kundalini", "dharma"],
+        "family": ["wedding", "birthday", "christmas", "thanksgiving", "graduation", "baby",
+                    "family", "home_video", "vacation", "reunion"],
+        "music": ["concert", "band", "music", "gig", "show", "live", "performance"],
+        "sports": ["game", "sports", "football", "baseball", "soccer", "basketball", "tournament"],
+        "church": ["church", "sermon", "gospel", "choir", "worship", "baptism"],
+    }
+
+    found_terms = []
+    for domain, terms in domain_terms.items():
+        for term in terms:
+            if term in filename:
+                found_terms.append(term)
+
+    return ", ".join(found_terms)
+
+
+def step_generate_chapters(transcript, max_chapters=5):
+    """Generate chapter markers from a transcript by detecting topic changes.
+
+    Uses the LLM to identify natural segment boundaries in the transcript
+    and returns a list of {timestamp, title} objects.
+
+    Args:
+        transcript: Full transcript text
+        max_chapters: Maximum number of chapters to generate (default 5)
+
+    Returns:
+        (success: bool, chapters: list[dict]|None, error: str|None)
+        chapters: [{"timestamp": "0:00", "title": "..."}, ...]
+    """
+    api_url = get_api_url()
+    if not api_url:
+        return False, None, "No API endpoint configured"
+
+    CHAPTER_PROMPT = f"""Analyze this transcript and divide it into {max_chapters} natural chapters.
+For each chapter, identify:
+1. A timestamp or time range (if available in the transcript)
+2. A concise title that describes the topic of that section
+
+Respond with ONLY a JSON array of chapters:
+[{{"timestamp": "0:00", "title": "Introduction"}}, {{"timestamp": "2:30", "title": "Main Topic"}}]
+
+Focus on topic changes, not time intervals. If the transcript has no clear segments,
+create {max_chapters} equal-length chapters with descriptive titles based on content.
+JSON array only, no markdown, no explanation."""
+
+    messages = [
+        {"role": "system", "content": CHAPTER_PROMPT},
+        {"role": "user", "content": f"Transcript:\n{transcript[:4000]}"},
+    ]
+
+    success, text, err = _call_api(
+        messages, api_url=api_url, api_key=get_api_key(), model=get_model_name(),
+    )
+
+    if not success or not text:
+        return False, None, err or "LLM unavailable"
+
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
+
+    start = text.find("[")
+    end = text.rfind("]") + 1
+    if start >= 0 and end > start:
+        try:
+            chapters = json.loads(text[start:end])
+            if isinstance(chapters, list) and len(chapters) > 0:
+                return True, chapters, None
+        except json.JSONDecodeError:
+            pass
+
+    return False, None, f"Could not parse chapters from response"
+
+
+def step_save(base_name, video_path, transcript, labels, vocabulary, chapters=None):
     """Save metadata alongside the video file."""
     from engine.validate import validate_capture
 
@@ -453,6 +550,9 @@ def step_save(base_name, video_path, transcript, labels, vocabulary):
         "labels": labels,
         "vocabulary_used": vocabulary,
     }
+
+    if chapters:
+        metadata["chapters"] = chapters
 
     os.makedirs(VAULT_DIR, exist_ok=True)
     meta_path = os.path.join(VAULT_DIR, f"{base_name}.json")
@@ -497,8 +597,18 @@ def run_pipeline(user_description, video_path):
     memory = load_memory()
     log("memory", {"loaded": bool(memory)})
 
-    # 2. Generate vocabulary (Worker agent, isolated context)
-    vocab = step_generate_vocabulary(user_description, memory)
+    # 2. Bootstrap vocabulary from filename if user didn't provide description
+    filename_topic = ""
+    if not user_description or len(user_description) < 10:
+        filename_topic = extract_topic_from_filename(video_path)
+        log("filename_topic", {"extracted": filename_topic})
+
+    effective_description = user_description
+    if filename_topic and (not user_description or len(user_description) < 10):
+        effective_description = filename_topic
+
+    # 3. Generate vocabulary (Worker agent, isolated context)
+    vocab = step_generate_vocabulary(effective_description, memory)
     log("vocabulary", {"words": len(vocab.split(",")) if vocab else 0, "sample": vocab[:100]})
 
     # 3. Transcribe with vocabulary priming
@@ -555,9 +665,13 @@ def run_pipeline(user_description, video_path):
     labels, label_err = step_label(transcript)
     log("label", {"labels": labels, "error": label_err})
 
-    # 6. Save metadata
+    # 6. Generate chapter markers from transcript
+    chapters, chapter_err = step_generate_chapters(transcript)
+    log("chapters", {"chapters": chapters, "error": chapter_err})
+
+    # 7. Save metadata
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-    metadata = step_save(base_name, video_path, transcript, labels, vocab)
+    metadata = step_save(base_name, video_path, transcript, labels, vocab, chapters=chapters)
     log("save", {"file": f"{base_name}.json"})
 
     # 7. Log session to memory
@@ -582,6 +696,96 @@ def run_pipeline(user_description, video_path):
             "consequence": final_dream.get("consequence", ""),
         }
 
+    return results
+
+
+def run_batch_pipeline(user_description, video_paths):
+    """Run the pipeline on multiple tapes with cumulative vocabulary learning.
+
+    The first tape generates vocabulary, and subsequent tapes refine it based
+    on any new domain-specific words discovered during correction.
+
+    Args:
+        user_description: What the user said about their tapes
+        video_paths: List of paths to video files to process
+
+    Returns:
+        dict with "results" (list of per-tape results) and "cumulative_vocabulary"
+    """
+    results = {"tapes": [], "cumulative_vocabulary": ""}
+
+    memory = load_memory()
+    cumulative_vocab = ""
+    filename_topics = []
+
+    for i, video_path in enumerate(video_paths):
+        tape_result = {
+            "index": i + 1,
+            "total": len(video_paths),
+            "video_path": video_path,
+        }
+
+        if i == 0:
+            cumulative_vocab = step_generate_vocabulary(user_description, memory)
+        else:
+            prior_vocab = cumulative_vocab
+            cumulative_vocab = step_generate_vocabulary(
+                f"{user_description}\n\nPreviously learned vocabulary: {prior_vocab}",
+                memory
+            )
+
+        tape_result["vocabulary_sample"] = cumulative_vocab[:100]
+
+        transcript, err = step_transcribe(video_path, vocabulary=cumulative_vocab)
+        if not transcript:
+            tape_result["error"] = err
+            tape_result["transcript"] = None
+            tape_result["labels"] = None
+            tape_result["chapters"] = None
+            results["tapes"].append(tape_result)
+            continue
+
+        tape_result["transcript"] = transcript
+
+        final_dream = None
+        for iteration in range(MAX_ITERATIONS):
+            dream = step_dream(transcript, cumulative_vocab)
+            final_dream = dream
+
+            if dream.get("pass", True):
+                break
+
+            if iteration < MAX_ITERATIONS - 1:
+                corrected_transcript, corrections = step_apply_corrections(
+                    transcript, dream, cumulative_vocab,
+                    feedback=dream.get("reasons"),
+                )
+                if corrections and corrected_transcript != transcript:
+                    transcript = corrected_transcript
+                    tape_result.setdefault("corrections_applied", []).extend(corrections)
+                else:
+                    break
+            else:
+                tape_result["warning"] = f"Quality threshold not met after {MAX_ITERATIONS} rounds"
+                tape_result["final_scores"] = dream.get("scores", {})
+
+        labels, label_err = step_label(transcript)
+        tape_result["labels"] = labels if labels else None
+        tape_result["label_error"] = label_err
+
+        chapters, chapter_err = step_generate_chapters(transcript)
+        tape_result["chapters"] = chapters if chapters else None
+
+        base_name = os.path.splitext(os.path.basename(video_path))[0]
+        metadata = step_save(base_name, video_path, transcript, labels, cumulative_vocab, chapters=chapters)
+        tape_result["metadata_saved"] = True
+
+        title = labels.get("title", "untitled") if labels else "untitled"
+        append_session_log(f"Captured '{title}' from {os.path.basename(video_path)}")
+
+        results["tapes"].append(tape_result)
+
+    results["cumulative_vocabulary"] = cumulative_vocab
     return results
 
 
