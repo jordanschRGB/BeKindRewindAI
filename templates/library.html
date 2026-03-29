@@ -5,7 +5,7 @@
 
 <div class="mv-card">
     <table>
-        <thead><tr><th>Name</th><th>Duration</th><th>Size</th><th>Date</th><th>Status</th></tr></thead>
+        <thead><tr><th>Name</th><th>Duration</th><th>Size</th><th>Date</th><th>Status</th><th></th></tr></thead>
         <tbody id="library-list"></tbody>
     </table>
     <div id="library-empty" class="mv-empty" style="display:none;">
@@ -16,18 +16,52 @@
 </div>
 
 <script>
-fetch("/api/library").then(r => r.json()).then(data => {
+async function loadLibrary() {
+    const resp = await fetch("/api/library");
+    const data = await resp.json();
     const tapes = data.tapes || [];
-    if (!tapes.length) { document.getElementById("library-empty").style.display = "block"; return; }
     const tbody = document.getElementById("library-list");
+    const emptyMsg = document.getElementById("library-empty");
+    if (!tapes.length) {
+        emptyMsg.style.display = "block";
+        return;
+    }
+    emptyMsg.style.display = "none";
     tapes.forEach(t => {
+        const baseName = t.base_name || t.filename?.replace(/\.mp4$/, "");
         const tr = document.createElement("tr");
         const dur = t.duration_seconds ? Math.floor(t.duration_seconds/60) + " min" : "-";
         const size = t.size_bytes ? (t.size_bytes/1024/1024).toFixed(0) + " MB" : "-";
         const valid = t.validation?.not_blank ? "OK" : "Check";
-        tr.innerHTML = "<td>" + t.filename + "</td><td>" + dur + "</td><td>" + size + "</td><td>" + (t.captured_at||"-") + "</td><td>" + valid + "</td>";
+        tr.innerHTML = `
+            <td>${t.labels?.title || t.filename}</td>
+            <td>${dur}</td>
+            <td>${size}</td>
+            <td>${t.captured_at ? t.captured_at.split("T")[0] : "-"}</td>
+            <td>${valid}</td>
+            <td><button class="mv-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem" onclick="deleteTape('${baseName}', this)">Delete</button></td>
+        `;
         tbody.appendChild(tr);
     });
-});
+}
+
+async function deleteTape(baseName, btn) {
+    if (!confirm("Delete this tape? This cannot be undone.")) return;
+    btn.disabled = true;
+    btn.textContent = "...";
+    const resp = await fetch(`/api/library/${encodeURIComponent(baseName)}`, { method: "DELETE" });
+    if (resp.ok) {
+        btn.closest("tr").remove();
+        if (!document.querySelectorAll("#library-list tr").length) {
+            document.getElementById("library-empty").style.display = "block";
+        }
+    } else {
+        btn.disabled = false;
+        btn.textContent = "Delete";
+        alert("Failed to delete tape.");
+    }
+}
+
+loadLibrary();
 </script>
 {% endblock %}

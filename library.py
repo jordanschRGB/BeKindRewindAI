@@ -35,3 +35,16 @@ def get_tape(output_dir, base_name):
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def delete_tape(output_dir, base_name):
+    json_path = os.path.join(output_dir, f"{base_name}.json")
+    mp4_path = os.path.join(output_dir, f"{base_name}.mp4")
+    removed = []
+    if os.path.exists(json_path):
+        os.remove(json_path)
+        removed.append(f"{base_name}.json")
+    if os.path.exists(mp4_path):
+        os.remove(mp4_path)
+        removed.append(f"{base_name}.mp4")
+    return removed

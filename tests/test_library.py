@@ -7,7 +7,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from library import list_tapes, get_tape, save_metadata
+from library import list_tapes, get_tape, save_metadata, delete_tape
 
 
 def test_list_tapes_empty_dir():
@@ -46,3 +46,21 @@ def test_get_tape_not_found():
     with tempfile.TemporaryDirectory() as d:
         tape = get_tape(d, "nonexistent")
         assert tape is None
+
+
+def test_delete_tape_removes_files():
+    with tempfile.TemporaryDirectory() as d:
+        meta = {"filename": "Tape_001.mp4", "duration_seconds": 100}
+        save_metadata(d, "Tape_001", meta)
+        with open(os.path.join(d, "Tape_001.mp4"), "w") as f:
+            f.write("fake video")
+        removed = delete_tape(d, "Tape_001")
+        assert "Tape_001.json" in removed
+        assert "Tape_001.mp4" in removed
+        assert get_tape(d, "Tape_001") is None
+
+
+def test_delete_tape_missing_files():
+    with tempfile.TemporaryDirectory() as d:
+        removed = delete_tape(d, "nonexistent")
+        assert removed == []

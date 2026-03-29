@@ -59,3 +59,21 @@ def test_library_empty(tmp_path):
     assert r.status_code == 200
     data = r.get_json()
     assert data["tapes"] == []
+
+
+def test_library_delete(tmp_path):
+    client = _make_client(tmp_path)
+    from library import save_metadata
+    meta = {"filename": "Tape_001.mp4", "base_name": "Tape_001", "duration_seconds": 100}
+    save_metadata(str(tmp_path / "output"), "Tape_001", meta)
+    r = client.delete("/api/library/Tape_001")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["status"] == "ok"
+    assert "Tape_001.json" in data["removed"]
+
+
+def test_library_delete_not_found(tmp_path):
+    client = _make_client(tmp_path)
+    r = client.delete("/api/library/nonexistent")
+    assert r.status_code == 404

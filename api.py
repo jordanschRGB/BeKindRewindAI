@@ -138,6 +138,16 @@ def library_get(tape_id):
     return jsonify(tape)
 
 
+@api_bp.route("/library/<tape_id>", methods=["DELETE"])
+def library_delete(tape_id):
+    from library import delete_tape, get_tape
+    output_dir = current_app.config["OUTPUT_DIR"]
+    if get_tape(output_dir, tape_id) is None:
+        return jsonify({"error": "Tape not found"}), 404
+    removed = delete_tape(output_dir, tape_id)
+    return jsonify({"status": "ok", "removed": removed})
+
+
 @api_bp.route("/settings/ai")
 def ai_settings():
     from engine.inference import get_download_status, detect_hardware, ensure_llama_cpp
