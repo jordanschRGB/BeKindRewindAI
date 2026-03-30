@@ -54,6 +54,9 @@ def generate_whisper_vocabulary(user_description: str) -> str:
     return f"Error: {err}"
 
 
+_active_recorder: dict = {}
+
+
 @tool
 def start_capture(video_device: str, audio_device: str, output_name: str) -> str:
     """Start recording from a capture card. This captures video and audio
@@ -69,6 +72,8 @@ def start_capture(video_device: str, audio_device: str, output_name: str) -> str
     import platform
     from engine.capture import Recorder
 
+    global _active_recorder
+
     output_dir = os.path.join(os.path.expanduser("~"), "Videos", "MemoryVault")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -82,15 +87,36 @@ def start_capture(video_device: str, audio_device: str, output_name: str) -> str
     recorder = Recorder(video_cfg, audio_cfg, raw_path)
     recorder.start()
 
-    # Wait for recording to finish (auto-stop on silence/black)
-    while recorder.is_running() and not recorder.stopped:
-        time.sleep(1)
+    _active_recorder["recorder"] = recorder
+    _active_recorder["raw_path"] = raw_path
+
+    return json.dumps({
+        "status": "recording",
+        "file": raw_path,
+        "message": "Recording started. Say 'stop' or 'done' when finished.",
+    })
+
+
+@tool
+def stop_capture() -> str:
+    """Stop an in-progress recording and finalize the output file.
+    Call this when the user says they're done recording.
+    """
+    global _active_recorder
+
+    if not _active_recorder or "recorder" not in _active_recorder:
+        return json.dumps({"status": "error", "error": "No active recording to stop"})
+
+    recorder = _active_recorder["recorder"]
+    raw_path = _active_recorder["raw_path"]
 
     if not recorder.stopped:
         recorder.stop()
 
     elapsed = int(recorder.elapsed())
     stop_reason = recorder.stop_reason or "manual"
+
+    _active_recorder.clear()
 
     if os.path.exists(raw_path) and os.path.getsize(raw_path) > 0:
         return json.dumps({
@@ -310,6 +336,7 @@ def create_archivist():
             detect_devices,
             generate_whisper_vocabulary,
             start_capture,
+            stop_capture,
             encode_video,
             transcribe_video_file,
             label_tape,
