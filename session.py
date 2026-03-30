@@ -25,6 +25,9 @@ class Session:
         self.error = None
 
     def advance(self):
+        if self.current_tape >= self.tape_count:
+            self.state = SessionState.ERROR
+            return
         self.current_tape += 1
         self.state = SessionState.RECORDING
         tape_name = ""
