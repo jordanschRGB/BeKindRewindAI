@@ -331,21 +331,59 @@ def worker_generate_vocabulary(user_description, memory_text=""):
 
 SCORER_SYSTEM = """You score the quality of VHS tape labels.
 
-You will receive a transcript and the generated label (title, description, tags).
+You will receive:
+1. A transcript of the audio
+2. A generated label (title, description, tags) as JSON
 
-Rate 1-10 and state what happened to the human because of any errors.
+Evaluate using EXACTLY these 4 criteria:
 
-Rules:
-- 9-10: Label is accurate, grounded in transcript, properly formatted
-- 6-8: Minor issues (title slightly off, missing a relevant tag)
-- 3-5: Significant issues (wrong topic, hallucinated names not in transcript)
-- 1-2: Unusable (broken JSON, completely wrong content, generic "Unknown Audio")
+## accuracy (threshold 7)
+Rate 1-10 by answering YES/NO questions mechanically:
 
-For scores below 7, state the human consequence in one sentence.
-Not "try harder." State what the user would have to do because of this error.
+Q: Does every proper noun, name, and domain term in the label match the transcript EXACTLY or is spelled phonetically correctly?
+   YES → score 9-10
+   NO, 1-2 names/terms are misspelled but recoverable → score 6-8
+   NO, 3+ names/terms mangled OR 1 critical term wrong → score 3-5
+   NO, transcript mostly incomprehensible OR critical content hallucinated → score 1-2
 
-Respond as JSON: {"score": N, "reason": "...", "consequence": "..."}
-consequence is null for scores 7+."""
+## completeness (threshold 7)
+Q: Is the label complete relative to what the transcript offers?
+   YES, full content captured → score 9-10
+   YES, 1-2 minor truncations under 10s → score 6-8
+   NO, multiple sentences dropped, significant portions missing → score 3-5
+   NO, less than half the audio is represented → score 1-2
+
+## label_quality (threshold 6)
+Q: Does the title contain at least 1 specific detail from transcript (name, event, date, location)?
+   YES → score 9-10
+   YES, title accurate but generic (e.g., "Family Video" for a wedding) → score 6-8
+   NO, title wrong topic or uses content not in transcript → score 3-5
+   NO, JSON malformed or title is "Unknown Audio" → score 1-2
+
+## hallucination (threshold 8)
+Q: Do any names, events, dates, or details appear in the label that are absent from the transcript?
+   NO, none absent → score 9-10
+   NO, 1 ambiguous detail unconfirmed in transcript → score 6-8
+   YES, 1-2 hallucinated items → score 3-5
+   YES, 3+ hallucinated items OR significant fabricated content → score 1-2
+
+## Final score
+Final score = LOWEST score across all 4 criteria.
+
+## Output format
+Respond ONLY with JSON:
+{
+  "score": N,
+  "reason": "one sentence citing EXACT transcript evidence and naming the criterion that failed",
+  "corrections_needed": ["EXACT WRONG STRING → EXACT CORRECT STRING at MM:SS", ...],
+  "pass": true/false
+}
+
+If pass=true (all criteria at threshold), corrections_needed is an empty list.
+If pass=false, corrections_needed lists every failing criterion as "EXACT WRONG STRING → EXACT CORRECT STRING at MM:SS".
+If a string appears multiple times, list it multiple times with timestamps.
+NEVER write vague corrections like "User must fix N names" or "improve accuracy".
+Every corrections_needed entry must cite exact strings from the transcript and label."""
 
 
 def scorer_rate_output(transcript, labels_json):
@@ -356,7 +394,7 @@ def scorer_rate_output(transcript, labels_json):
 
     Returns:
         (success: bool, score_data: dict|None, error: str|None)
-        score_data: {"score": int, "reason": str, "consequence": str|None}
+        score_data: {"score": int, "reason": str, "corrections_needed": list, "pass": bool}
     """
     api_url = get_api_url()
     if not api_url:
@@ -364,7 +402,7 @@ def scorer_rate_output(transcript, labels_json):
 
     messages = [
         {"role": "system", "content": SCORER_SYSTEM},
-        {"role": "user", "content": f"Transcript:\n{transcript}\n\nGenerated label:\n{labels_json}\n\nScore:"},
+        {"role": "user", "content": f"Transcript:\n{transcript}\n\nGenerated label:\n{labels_json}"},
     ]
 
     success, text, err = _call_api(
@@ -374,7 +412,6 @@ def scorer_rate_output(transcript, labels_json):
     if not success:
         return False, None, err
 
-    # Parse score JSON
     if not text:
         return False, None, "Empty response from scorer"
     text = text.strip()
@@ -390,7 +427,8 @@ def scorer_rate_output(transcript, labels_json):
             return True, {
                 "score": int(data.get("score", 0)),
                 "reason": str(data.get("reason", "")),
-                "consequence": data.get("consequence"),
+                "corrections_needed": data.get("corrections_needed", []),
+                "pass": bool(data.get("pass", False)),
             }, None
         except (json.JSONDecodeError, ValueError):
             pass
