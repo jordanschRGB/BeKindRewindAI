@@ -50,7 +50,8 @@ def validate_capture(path):
         result["error"] = "Could not read file metadata"
         return result
 
-    duration = float(probe.get("format", {}).get("duration", 0))
+    duration_str = probe.get("format", {}).get("duration")
+    duration = float(duration_str) if duration_str else 0.0
     result["duration_seconds"] = int(duration)
 
     streams = probe.get("streams", [])

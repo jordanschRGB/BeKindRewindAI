@@ -41,7 +41,7 @@ def list_tapes(output_dir, limit=None, offset=0, search=None):
         for t in tapes:
             filename = t.get("filename", "").lower()
             title = t.get("labels", {}).get("title", "").lower()
-            tags = " ".join(t.get("labels", {}).get("tags", [])).lower()
+            tags = " ".join((t.get("labels") or {}).get("tags", [])).lower()
             transcript = t.get("transcript", "").lower()
             if (search_lower in filename or search_lower in title or
                 search_lower in tags or search_lower in transcript):
@@ -118,8 +118,6 @@ def export_library(output_dir, format="json"):
         return True, json.dumps(tapes, indent=2), None
 
     if format == "csv":
-        if not tapes:
-            return True, "", None
         import csv
         import io
         output = io.StringIO()
