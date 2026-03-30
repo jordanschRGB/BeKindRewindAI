@@ -6,6 +6,7 @@ Recording logic: signal detection, Recorder class, ffmpeg command builder.
 import os
 import platform
 import re
+import select
 import subprocess
 import tempfile
 import threading
@@ -165,6 +166,9 @@ class Recorder:
         """
         while self.process and self.process.poll() is None:
             try:
+                ready, _, _ = select.select([self.process.stderr], [], [], 0.1)
+                if not ready:
+                    continue
                 line = self.process.stderr.readline()
                 if not line:
                     break
