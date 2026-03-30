@@ -375,6 +375,8 @@ def scorer_rate_output(transcript, labels_json):
         return False, None, err
 
     # Parse score JSON
+    if not text:
+        return False, None, "Empty response from scorer"
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -397,31 +399,17 @@ def scorer_rate_output(transcript, labels_json):
 
 
 # ── Memory System ────────────────────────────────────────────────────────────
-# Dual backend: RuVector (semantic, with biomimetic decay) + flat markdown.
-# Flat file is always written (human-readable, fallback).
-# RuVector enables semantic retrieval so we load RELEVANT memories, not ALL.
-
-import logging as _logging
-
-_mem_logger = _logging.getLogger(__name__ + ".memory")
+# Flat markdown file only. No vector DB, no mcporter, no RuVector.
 
 MEMORY_FILE = os.path.join(os.path.expanduser("~"), ".memoryvault", "archivist_memory.md")
 
-# Lazy import to avoid hard dependency
-_ruvector = None
-
-
-def _get_ruvector():
-    """Lazy-load the RuVector memory backend."""
-    global _ruvector
-    if _ruvector is None:
-        try:
-            from harness import memory as _rv
-            _ruvector = _rv
-        except ImportError:
-            _mem_logger.warning("harness.memory not available, RuVector disabled")
-            _ruvector = False
-    return _ruvector if _ruvector else None
+DOMAIN_KEYWORDS = {
+    "spiritual": ["kirtan", "meditation", "spiritual", "ashram", "yoga", "mantra", "healing", "ceremony", "pranayama", "bhajan", "puja", "satsang"],
+    "family": ["family", "christmas", "birthday", "wedding", "kids", "home video", "grandma", "grandpa", "holiday", "vacation"],
+    "church": ["church", "sermon", "gospel", "choir", "hymn", "pastor", "reverend", "congregation"],
+    "music": ["concert", "band", "music", "gig", "show", "guitar", "drums", "vocals"],
+    "sports": ["game", "sports", "football", "baseball", "tournament", "championship", "coach"],
+}
 
 
 def _load_flat_memory():
@@ -432,153 +420,76 @@ def _load_flat_memory():
     return ""
 
 
-def load_memory(query=None):
-    """Load memory, optionally with semantic search.
-
-    If query is provided and RuVector is available, returns semantically
-    relevant memories instead of the entire file. Falls back to flat file.
-    """
-    if query:
-        rv = _get_ruvector()
-        if rv:
-            try:
-                results = rv.search_memory(query, top_k=10)
-                if results:
-                    parts = []
-                    for r in results:
-                        content = r.get("content", "") if isinstance(r, dict) else str(r)
-                        parts.append(content)
-                    return "\n".join(parts)
-            except Exception as e:
-                _mem_logger.warning("RuVector search failed, falling back to flat file: %s", e)
-
-    # Fallback: return full flat file
-    return _load_flat_memory()
-
-
-def save_memory(content):
+def _save_flat_memory(content):
     """Write the full memory file."""
     os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
     with open(MEMORY_FILE, "w") as f:
         f.write(content)
 
 
-def append_memory(section, entry):
-    """Append an entry to a section of the memory file."""
-    memory = _load_flat_memory()
-
-    if not memory:
-        memory = "# Archivist Memory\n\n"
-
-    # Find or create section
-    section_header = f"## {section}"
-    if section_header not in memory:
-        memory += f"\n{section_header}\n"
-
-    # Append entry
-    memory += f"- {entry}\n"
-    save_memory(memory)
-
-    # Also store in RuVector
-    rv = _get_ruvector()
-    if rv:
-        try:
-            rv.store_memory(f"{section}: {entry}", {"type": section.lower()})
-        except Exception as e:
-            _mem_logger.warning("RuVector store failed (flat file still written): %s", e)
-
-
 def append_vocabulary(words):
-    """Add discovered vocabulary to memory for future sessions.
-
-    Writes to flat file (human-readable backup) and calls rv.store_vocabulary()
-    ONLY — does NOT call append_memory() to avoid double-writing to RuVector.
-    """
-    # Flat file only (no rv.store_memory call here)
+    """Add discovered vocabulary to memory for future sessions."""
     memory = _load_flat_memory()
     if not memory:
         memory = "# Archivist Memory\n\n"
     if "## Vocabulary" not in memory:
         memory += "\n## Vocabulary\n"
     memory += f"- {words}\n"
-    save_memory(memory)
-
-    # RuVector: vocabulary-typed store only (not store_memory, not append_memory)
-    rv = _get_ruvector()
-    if rv:
-        try:
-            rv.store_vocabulary(words)
-        except Exception as e:
-            _mem_logger.warning("RuVector vocabulary store failed: %s", e)
+    _save_flat_memory(memory)
 
 
 def append_session_log(summary):
-    """Log a completed session to flat file and RuVector.
-
-    Writes to flat file directly and calls rv.store_session() ONLY —
-    does NOT call append_memory() to avoid double-writing to RuVector.
-    """
+    """Log a completed session to flat file."""
     timestamp = time.strftime("%Y-%m-%d %H:%M")
     entry = f"{timestamp}: {summary}"
-
-    # Flat file only (no rv.store_memory call here)
     memory = _load_flat_memory()
     if not memory:
         memory = "# Archivist Memory\n\n"
     if "## Sessions" not in memory:
         memory += "\n## Sessions\n"
     memory += f"- {entry}\n"
-    save_memory(memory)
-
-    # RuVector: session-typed store only (not store_memory, not append_memory)
-    rv = _get_ruvector()
-    if rv:
-        try:
-            rv.store_session(summary)
-        except Exception as e:
-            _mem_logger.warning("RuVector session store failed: %s", e)
+    _save_flat_memory(memory)
 
 
 def load_relevant_vocabulary(description, top_k=20):
-    """Load vocabulary relevant to a specific tape description.
+    """Load vocabulary relevant to a tape description using domain matching + substring search.
 
-    Instead of loading ALL vocabulary (which overflows context), this
-    uses RuVector's semantic search to find the top-k most relevant
-    vocabulary entries. Biomimetic decay means frequently-useful terms
-    reinforce while one-off words fade naturally.
-
-    Falls back to loading all vocabulary from flat file if RuVector
-    is unavailable.
+    1. Detect domain from description keywords
+    2. Load domain preset vocabulary
+    3. Load any stored vocabulary entries containing description keywords (substring match)
+    4. Combine and dedupe, limited to top_k entries
 
     Args:
         description: What's being digitized (tape description).
-        top_k: Max vocabulary entries to retrieve.
+        top_k: Max vocabulary entries to return.
 
     Returns vocabulary string.
     """
-    rv = _get_ruvector()
-    if rv:
-        try:
-            vocab = rv.get_relevant_vocabulary(description, top_k=top_k)
-            if vocab:
-                return vocab
-        except Exception as e:
-            _mem_logger.warning("RuVector vocabulary retrieval failed, falling back: %s", e)
+    desc_lower = description.lower()
 
-    # Fallback: extract vocabulary section from flat file
+    domain_vocab = set()
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        if any(kw in desc_lower for kw in keywords):
+            preset = DOMAIN_PRESETS.get(domain, "")
+            if preset:
+                for word in preset.split(", "):
+                    domain_vocab.add(word.strip())
+
+    keyword_vocab = set()
     memory = _load_flat_memory()
-    if not memory:
-        return ""
+    if memory:
+        in_vocab = False
+        for line in memory.split("\n"):
+            if line.strip() == "## Vocabulary":
+                in_vocab = True
+                continue
+            if in_vocab and line.startswith("## "):
+                break
+            if in_vocab and line.strip().startswith("- "):
+                vocab_entry = line.strip()[2:].lower()
+                if any(kw in vocab_entry for kw in desc_lower.split()):
+                    for word in vocab_entry.split(", "):
+                        keyword_vocab.add(word.strip())
 
-    in_vocab = False
-    lines = []
-    for line in memory.split("\n"):
-        if line.strip() == "## Vocabulary":
-            in_vocab = True
-            continue
-        if in_vocab and line.startswith("## "):
-            break
-        if in_vocab and line.strip().startswith("- "):
-            lines.append(line.strip()[2:])
-
-    return ", ".join(lines)
+    all_vocab = list(domain_vocab | keyword_vocab)[:top_k]
+    return ", ".join(all_vocab)

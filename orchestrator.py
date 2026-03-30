@@ -268,8 +268,8 @@ def read_memory() -> str:
     """Read the Archivist's memory file. Contains user preferences,
     learned vocabulary, and session history from previous runs.
     """
-    from agent import load_memory
-    memory = load_memory()
+    from agent import _load_flat_memory
+    memory = _load_flat_memory()
     return memory if memory else "(no memory yet)"
 
 
@@ -282,8 +282,15 @@ def save_to_memory(section: str, entry: str) -> str:
         section: Section name (e.g. "User Preferences", "Vocabulary", "Sessions")
         entry: The text to append to that section.
     """
-    from agent import append_memory
-    append_memory(section, entry)
+    from agent import _load_flat_memory, _save_flat_memory
+    memory = _load_flat_memory()
+    if not memory:
+        memory = "# Archivist Memory\n\n"
+    section_header = f"## {section}"
+    if section_header not in memory:
+        memory += f"\n{section_header}\n"
+    memory += f"- {entry}\n"
+    _save_flat_memory(memory)
     return f"Saved to memory: [{section}] {entry}"
 
 
