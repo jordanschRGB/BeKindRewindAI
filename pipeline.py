@@ -1,5 +1,6 @@
 """Capture pipeline — orchestrates record -> encode -> validate -> save."""
 
+import json
 import logging
 import os
 import re
@@ -139,6 +140,17 @@ def _pipeline_thread(session, config, on_complete):
 
         # Re-save metadata with AI data
         save_metadata(output_dir, base_name, metadata)
+
+        # Score the label quality and store corrections
+        from agent import scorer_rate_output, append_vocabulary
+        transcript_text = metadata.get("transcript", "")
+        labels_text = json.dumps(metadata.get("labels", {})) if metadata.get("labels") else ""
+        if transcript_text and labels_text:
+            ok, score_data, _ = scorer_rate_output(transcript_text, labels_text)
+            if ok and score_data and score_data.get("score", 0) < 7:
+                consequence = score_data.get("consequence", "")
+                if consequence:
+                    append_vocabulary(consequence)
     except Exception:
         logger.exception("AI post-processing failed")
 
