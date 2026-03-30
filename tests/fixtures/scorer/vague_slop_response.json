@@ -1,0 +1,16 @@
+{
+  "scores": {
+    "accuracy": 6,
+    "completeness": 5,
+    "label_quality": 4,
+    "hallucination": 8
+  },
+  "reasons": {
+    "accuracy": "Some names unclear or partially correct",
+    "completeness": "Missing sections of transcript",
+    "label_quality": "Generic title, lacks specific context",
+    "hallucination": "No major fabrications but some uncertain details"
+  },
+  "pass": false,
+  "consequence": "user has to review unclear sections and add missing context manually"
+}
