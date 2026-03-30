@@ -241,6 +241,34 @@ class MemoryVaultAgent:
                 "config": config,
             }
 
+        if self.state == "ready":
+            return {
+                "message": "Good — the tape's loaded and I'm listening. Just say the word and we'll get rolling.",
+                "action": None,
+                "config": None,
+            }
+
+        if self.state == "recording":
+            return {
+                "message": "Still recording — I'll be here when you're done. Take your time.",
+                "action": None,
+                "config": None,
+            }
+
+        if self.state == "labeling":
+            return {
+                "message": "Still working through the tape — good stuff takes a moment. I'll have it labeled soon.",
+                "action": None,
+                "config": None,
+            }
+
+        if self.state == "done":
+            return {
+                "message": "All done here. Whenever you're ready to load another tape, just say the word.",
+                "action": None,
+                "config": None,
+            }
+
         return {
             "message": "I'm ready when you are. Just let me know what's happening.",
             "action": None,
