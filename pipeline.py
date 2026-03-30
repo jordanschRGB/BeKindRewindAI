@@ -1,9 +1,12 @@
 """Capture pipeline — orchestrates record -> encode -> validate -> save."""
 
+import logging
 import os
 import re
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 from engine.capture import Recorder, check_video_signal, _build_capture_cmd
 from engine.encode import encode_to_mp4
@@ -137,7 +140,7 @@ def _pipeline_thread(session, config, on_complete):
         # Re-save metadata with AI data
         save_metadata(output_dir, base_name, metadata)
     except Exception:
-        pass  # AI failures never block the pipeline
+        logger.exception("AI post-processing failed")
 
     session.complete_tape(validation, file_path=tape["file"])
 
