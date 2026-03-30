@@ -45,3 +45,17 @@ def test_session_status_dict():
     assert d["current_tape"] == 0
     assert d["state"] == "waiting"
     assert len(d["tapes"]) == 0
+
+
+def test_session_advance_overrun_protection():
+    s = Session(tape_count=2, output_dir="/tmp/test")
+    s.advance()
+    assert s.current_tape == 1
+    assert len(s.tapes) == 1
+    s.advance()
+    assert s.current_tape == 2
+    assert len(s.tapes) == 2
+    s.advance()
+    assert s.current_tape == 2
+    assert len(s.tapes) == 2
+    assert s.state == SessionState.ERROR
