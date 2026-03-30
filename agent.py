@@ -329,23 +329,92 @@ def worker_generate_vocabulary(user_description, memory_text=""):
 # Isolated context. Only sees the output and the transcript.
 # Returns a score and a human consequence. Never sees conversation history.
 
-SCORER_SYSTEM = """You score the quality of VHS tape labels.
+SCORER_SYSTEM = """You score VHS tape labels.
 
-You will receive a transcript and the generated label (title, description, tags).
+You receive a transcript and a generated label (title, description, tags).
+Score each criterion mechanically. Provide exact pass/fail evidence from the transcript.
 
-Rate 1-10 and state what happened to the human because of any errors.
+=== CRITERION 1: Title Accuracy ===
 
-Rules:
-- 9-10: Label is accurate, grounded in transcript, properly formatted
-- 6-8: Minor issues (title slightly off, missing a relevant tag)
-- 3-5: Significant issues (wrong topic, hallucinated names not in transcript)
-- 1-2: Unusable (broken JSON, completely wrong content, generic "Unknown Audio")
+QUESTION: Does the title match the transcript subject?
 
-For scores below 7, state the human consequence in one sentence.
-Not "try harder." State what the user would have to do because of this error.
+9-10: Title is precise and unambiguous.
+  Concrete test: Could a user find this exact recording using this title? YES = 9-10.
+
+6-8: Title is on the correct topic but incomplete or slightly off.
+  Concrete test: Does the transcript contain a key person, place, or event (from first 30 seconds) that the title omits or misrepresents? YES = 6-8.
+  consequence: "User must add/replace N element(s) to title: [specific missing element] from transcript."
+
+3-5: Title is on the right general topic but is vague or misleading.
+  Concrete test: Would a user search for this title based on the transcript and be confused or disappointed? YES = 3-5.
+  consequence: "User must replace vague title with specific title: '[exact phrase from transcript]' at [timestamp]."
+
+1-2: Title is completely wrong or generic.
+  Concrete test: Is the title "Unknown Audio", "No Audio", blank, or about a different topic entirely? YES = 1-2.
+  consequence: "User must discard title and create new one from transcript subject: '[first 10 words of transcript]'."
+
+=== CRITERION 2: Description Accuracy ===
+
+QUESTION: Does the description cover the transcript content?
+
+9-10: Description covers all major topics with specific details.
+  Concrete test: Are all key topics from the transcript present in the description? YES = 9-10.
+
+6-8: Description covers some topics but misses 1-2 important ones.
+  Concrete test: Does the transcript contain a topic, person, or phrase (with timestamp) that the description completely omits? YES = 6-8.
+  consequence: "User must add to description: '[specific omitted phrase]' referenced at [timestamp]."
+
+3-5: Description omits major topics OR includes 1-2 hallucinated details.
+  Concrete test: Is there a significant topic from the transcript (mentioned for 15+ seconds) absent from description? OR: Does description mention a specific name, date, or event not present in transcript? YES = 3-5.
+  consequence: "User must rewrite description to include missing topic '[specific topic]' from [timestamp range], OR remove hallucinated element '[specific hallucination]'."
+
+1-2: Description is generic, incoherent, or completely contradicts transcript.
+  Concrete test: Is the description just "A video of someone talking" or "Various topics discussed"? YES = 1-2.
+  consequence: "User must discard description and write new one capturing: [list 2-3 specific topics from transcript with timestamps]."
+
+=== CRITERION 3: Tag Relevance ===
+
+QUESTION: Do all tags appear verbatim in the transcript?
+
+9-10: Every tag is a direct phrase from the transcript. No invented tags.
+  Concrete test: Are ALL tags extractable word-for-word from the transcript? YES = 9-10.
+
+6-8: Most tags are from transcript but 1-2 are missing or 1-2 are not verbatim.
+  Concrete test: Are there tags not found in transcript, OR are significant transcript terms missing as tags? YES = 6-8.
+  consequence: "User must replace tag '[specific non-transcript tag]' with transcript term '[specific term]' from [timestamp]."
+
+3-5: Multiple tags are missing or incorrect.
+  Concrete test: Are 3+ tags missing from transcript, OR are 3+ tags not verbatim from transcript? YES = 3-5.
+  consequence: "User must replace all non-transcript tags. Missing transcript terms: [list 3+ specific terms with timestamps]."
+
+1-2: All tags are generic placeholders or completely absent.
+  Concrete test: Are all tags "video", "audio", "recording", "various", "miscellaneous", or similar? YES = 1-2.
+  consequence: "User must replace generic tags with specific transcript terms: '[term1]' at [timestamp], '[term2]' at [timestamp], '[term3]' at [timestamp]."
+
+=== CRITERION 4: Consequence Specificity ===
+
+QUESTION: Is every consequence field a specific action with evidence?
+
+9-10: consequence is null (scores 7+) OR consequence names exact elements with timestamps.
+  Example: "User must correct: 'Harjit' as 'hargeet' at 0:47, 'bhangra' as 'banga' at 2:13."
+
+6-8: consequence names specific errors but lacks timestamps or specific transcript evidence.
+  consequence: "User must fix N mangled name(s) in label."
+
+3-5: consequence is vague about what to fix.
+  consequence: "User must improve label accuracy."
+
+1-2: consequence is generic or missing when score < 7.
+  consequence: "User must rewrite label entirely."
+
+=== FINAL SCORE ===
+
+Take the LOWEST score across all four criteria. That is the final score.
 
 Respond as JSON: {"score": N, "reason": "...", "consequence": "..."}
-consequence is null for scores 7+."""
+
+For scores 7+: set consequence to null.
+For scores below 7: consequence MUST be a specific action with at least one transcript-derived detail (name, phrase, or timestamp)."""
 
 
 def scorer_rate_output(transcript, labels_json):
