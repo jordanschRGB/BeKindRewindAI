@@ -397,7 +397,8 @@ def scorer_rate_output(transcript, labels_json):
             return True, {
                 "score": int(data.get("score", 0)),
                 "reason": str(data.get("reason", "")),
-                "consequence": data.get("consequence"),
+                "corrections_needed": data.get("corrections_needed", []),
+                "pass": bool(data.get("pass", False)),
             }, None
         except (json.JSONDecodeError, ValueError):
             pass

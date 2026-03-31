@@ -396,3 +396,157 @@ class TestScorerProducesConcreteConsequences:
         assert "manually" in consequence.lower() or "by hand" in consequence.lower() or "correct" in consequence.lower(), (
             f"Consequence must state HOW user does it (manually/by hand): {consequence}"
         )
+
+
+class TestScorerRateOutputJsonParsing:
+    """Integration tests for scorer_rate_output JSON parsing with HTTP-level mocking.
+
+    These tests mock _call_api at the network level to verify the scorer
+    correctly parses real JSON responses including corrections_needed format.
+    """
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_real_json_parsing_from_scorer_response(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Verify scorer correctly parses a real JSON response with score=6, pass=False."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Mera naam Balbir hai. Main Punjab sa讨。"
+        labels_json = '{"title": "Ball Bir", "description": "Someone named ball bir", "tags": ["name"]}'
+
+        mock_call_api.return_value = (
+            True,
+            '{"score": 6, "reason": "accuracy at 5 — \'Balbir\' transcribed as \'ball bir\' at 0:47", "corrections_needed": ["Balbir → ball bir at 0:47"], "pass": false}',
+            None,
+        )
+
+        success, score_data, err = scorer_rate_output(transcript, labels_json)
+
+        assert success is True, f"Expected success but got error: {err}"
+        assert score_data is not None
+        assert score_data["score"] == 6
+        assert score_data["pass"] is False
+        assert score_data["corrections_needed"] == ["Balbir → ball bir at 0:47"]
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_corrections_needed_format_preserved(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Verify corrections_needed entries in 'WRONG → CORRECT at MM:SS' format are preserved exactly."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Navratri mein hamne garba kiya."
+        labels_json = '{"title": "Dance Event", "description": "People dancing", "tags": ["dance"]}'
+
+        corrections = [
+            "Navratri → Navrati at 0:15",
+            "garba → garbah at 0:22",
+            "hamne → humne at 0:30",
+        ]
+        import json
+        mock_response = json.dumps({
+            "score": 5,
+            "reason": "transcription accuracy issues",
+            "corrections_needed": corrections,
+            "pass": False,
+        })
+        mock_call_api.return_value = (True, mock_response, None)
+
+        success, score_data, err = scorer_rate_output(transcript, labels_json)
+
+        assert success is True
+        assert score_data is not None
+        assert score_data["corrections_needed"] == corrections
+        assert score_data["corrections_needed"][0] == "Navratri → Navrati at 0:15"
+        assert score_data["corrections_needed"][2] == "hamne → humne at 0:30"
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_pass_case_returns_empty_corrections_needed(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Verify passing scorer response returns empty corrections_needed and pass=True."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Happy birthday to you. All gathered for grandma's 80th birthday celebration."
+        labels_json = '{"title": "Grandma Birthday", "description": "80th birthday celebration", "tags": ["birthday", "family"]}'
+
+        mock_call_api.return_value = (
+            True,
+            '{"score": 9, "reason": "all criteria met", "corrections_needed": [], "pass": true}',
+            None,
+        )
+
+        success, score_data, err = scorer_rate_output(transcript, labels_json)
+
+        assert success is True
+        assert score_data is not None
+        assert score_data["pass"] is True
+        assert score_data["score"] == 9
+        assert score_data["corrections_needed"] == []
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_malformed_json_handled_gracefully(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Verify malformed JSON returns error tuple, doesn't crash."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Testing transcript"
+        labels_json = '{"title": "Test"}'
+
+        mock_call_api.return_value = (True, "This is not JSON at all { broken", None)
+
+        success, score_data, err = scorer_rate_output(transcript, labels_json)
+
+        assert success is False
+        assert score_data is None
+        assert err is not None
+        assert "Could not parse score from" in err
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_real_transcript_labels_end_to_end(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Verify end-to-end parsing with real transcript and realistic scorer response."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = (
+            "Aaj ka samajh nahi aata. kal school ja raha tha. "
+            "Mere dost ki shaadi mein bahut log aaye. "
+            "Haan, pakka, main ja raha hoon."
+        )
+        labels_json = '{"title": "Daily Life Talk", "description": "Person talking about daily routine", "tags": ["talk", "daily"]}'
+
+        mock_call_api.return_value = (
+            True,
+            '{"score": 4, "reason": "completeness at 4 — multiple sentences not captured, hallucination at 3 — shaadi mentioned but not in transcript", "corrections_needed": ["shaadi → shaadi-hallucinated at 0:38", "school → schooling context missing at 0:12"], "pass": false}',
+            None,
+        )
+
+        success, score_data, err = scorer_rate_output(transcript, labels_json)
+
+        assert success is True
+        assert score_data is not None
+        assert score_data["score"] == 4
+        assert score_data["pass"] is False
+        assert len(score_data["corrections_needed"]) == 2
+        assert "shaadi → shaadi-hallucinated at 0:38" in score_data["corrections_needed"]
+        assert "school → schooling context missing at 0:12" in score_data["corrections_needed"]
+        assert "completeness" in score_data["reason"]
+        assert "hallucination" in score_data["reason"]
