@@ -42,6 +42,15 @@ DOMAIN_PRESETS = {
     "general": "",
 }
 
+DOMAIN_KEYWORDS = {
+    "spiritual": ["kirtan", "meditation", "spiritual", "ashram", "yoga", "mantra", "healing", "ceremony", "pranayama", "bhajan", "satsang"],
+    "family": ["family", "christmas", "birthday", "wedding", "kids", "home video", "graduation", "baby", "vacation", "holiday"],
+    "sports": ["game", "sports", "football", "baseball", "tournament", "championship", "coach", "team", "score"],
+    "music": ["concert", "band", "music", "gig", "show", "guitar", "drums", "vocals", "solo", "venue"],
+    "church": ["church", "sermon", "gospel", "choir", "hymn", "pastor", "prayer", "congregation", "reverend"],
+    "general": [],
+}
+
 # System prompt for the agent's conversational behavior
 AGENT_SYSTEM = """You are the Archivist — MemoryVault's assistant. You help people digitize their VHS tapes and cassettes.
 
@@ -412,6 +421,8 @@ def scorer_rate_output(transcript, labels_json):
 
 import logging as _logging
 
+from rank_bm25 import BM25Okapi
+
 _mem_logger = _logging.getLogger(__name__ + ".memory")
 
 MEMORY_FILE = os.path.join(os.path.expanduser("~"), ".memoryvault", "archivist_memory.md")
@@ -548,46 +559,68 @@ def append_session_log(summary):
             _mem_logger.warning("RuVector session store failed: %s", e)
 
 
+def _tokenize(text):
+    """Simple whitespace tokenizer + lowercase."""
+    return text.lower().split()
+
+
 def load_relevant_vocabulary(description, top_k=20):
-    """Load vocabulary relevant to a specific tape description.
+    """Load vocabulary relevant to a tape description using BM25 ranking.
 
-    Instead of loading ALL vocabulary (which overflows context), this
-    uses RuVector's semantic search to find the top-k most relevant
-    vocabulary entries. Biomimetic decay means frequently-useful terms
-    reinforce while one-off words fade naturally.
-
-    Falls back to loading all vocabulary from flat file if RuVector
-    is unavailable.
+    1. Tokenize description
+    2. Load all stored vocabulary entries from flat memory file
+    3. Tokenize each vocab entry
+    4. Build BM25 index over vocab entries
+    5. Score entries against description, return top_k
 
     Args:
         description: What's being digitized (tape description).
-        top_k: Max vocabulary entries to retrieve.
+        top_k: Max vocabulary entries to return.
 
     Returns vocabulary string.
     """
-    rv = _get_ruvector()
-    if rv:
-        try:
-            vocab = rv.get_relevant_vocabulary(description, top_k=top_k)
-            if vocab:
-                return vocab
-        except Exception as e:
-            _mem_logger.warning("RuVector vocabulary retrieval failed, falling back: %s", e)
+    desc_lower = description.lower()
 
-    # Fallback: extract vocabulary section from flat file
+    domain_words = set()
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        if any(kw in desc_lower for kw in keywords):
+            preset = DOMAIN_PRESETS.get(domain, "")
+            if preset:
+                for word in preset.split(", "):
+                    domain_words.add(word.strip().lower())
+
     memory = _load_flat_memory()
-    if not memory:
+    stored_entries = []
+    if memory:
+        in_vocab = False
+        for line in memory.split("\n"):
+            if line.strip() == "## Vocabulary":
+                in_vocab = True
+                continue
+            if in_vocab and line.startswith("## "):
+                break
+            if in_vocab and line.strip().startswith("- "):
+                entry_text = line.strip()[2:].strip()
+                if entry_text:
+                    stored_entries.append(entry_text)
+
+    corpus = []
+    for word in sorted(domain_words):
+        corpus.append(word)
+    for entry in stored_entries:
+        corpus.append(entry)
+
+    if not corpus:
         return ""
 
-    in_vocab = False
-    lines = []
-    for line in memory.split("\n"):
-        if line.strip() == "## Vocabulary":
-            in_vocab = True
-            continue
-        if in_vocab and line.startswith("## "):
-            break
-        if in_vocab and line.strip().startswith("- "):
-            lines.append(line.strip()[2:])
+    tokenized_corpus = [_tokenize(doc) for doc in corpus]
+    bm25 = BM25Okapi(tokenized_corpus)
+    query_tokens = _tokenize(description)
+    scores = bm25.get_scores(query_tokens)
 
-    return ", ".join(lines)
+    indexed_scores = list(enumerate(scores))
+    indexed_scores.sort(key=lambda x: x[1], reverse=True)
+    top_indices = [i for i, s in indexed_scores[:top_k] if s > 0]
+
+    result = [corpus[i] for i in top_indices]
+    return ", ".join(result)
