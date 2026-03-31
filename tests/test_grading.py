@@ -1,6 +1,6 @@
 """Tests for harness/grading.py — threshold logic, pass/fail, consequence strings."""
 
-import pytest
+from unittest.mock import patch
 from harness.grading import (
     GRADING_CRITERIA,
     SCORE_MIN,
@@ -10,6 +10,7 @@ from harness.grading import (
     build_grading_prompt_section,
     format_failure_consequence,
 )
+from agent import scorer_rate_output
 
 
 class TestValidateScores:
@@ -187,3 +188,211 @@ class TestGradingCriteriaConfig:
             assert config["weight"] in valid_weights, (
                 f"{name} has invalid weight: {config['weight']}"
             )
+
+
+VAGUE_SLOP_PATTERNS = [
+    "some words may be inaccurate",
+    "some accuracy issues",
+    "there may be some issues",
+    "minor issues",
+    "could be better",
+    "not perfect",
+    "room for improvement",
+    "some errors",
+    "inaccuracies",
+    "improve",
+    "unknown audio",
+    "unclear",
+    "generic",
+    "vague",
+]
+
+
+def _is_vague_consequence(consequence):
+    """Return True if consequence is vague slop, not specific."""
+    if not consequence or not consequence.strip():
+        return True
+    lower = consequence.lower()
+    for pattern in VAGUE_SLOP_PATTERNS:
+        if pattern in lower:
+            return True
+    return False
+
+
+class TestScorerProducesConcreteConsequences:
+    """Test that scorer returns specific consequences, not slop.
+
+    These tests verify the scoring logic catches vague/generic responses
+    and fails when consequences don't specify what the human must DO.
+    """
+
+    def _mock_scorer(self, mock_call_api, llm_response):
+        """Helper to configure all mocks for scorer_rate_output."""
+        mock_call_api.return_value = (True, llm_response, None)
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_mangled_names_scenario(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Transcript has Hindi names mangled. Scorer must state specific consequence."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Mera naam Priya hai. Main kal school ja rahi thi. Meri best friend ki shaadi hai."
+        bad_label = '{"title": "Pria Goes to School", "description": "Girl talks about her day", "tags": ["school", "girl", "talk"]}'
+
+        self._mock_scorer(mock_call_api, '{"score": 4, "reason": "name Priya was transcribed as Pria", "consequence": "user must correct 1 mangled name (Priya→Pria)"}')
+
+        success, score_data, err = scorer_rate_output(transcript, bad_label)
+
+        assert success, f"scorer_rate_output failed: {err}"
+        assert score_data is not None
+        consequence = score_data.get("consequence") or ""
+
+        assert not _is_vague_consequence(consequence), (
+            f"FAIL: Mangled name scenario got vague consequence: '{consequence}'. "
+            f"Expected specific consequence like 'user has to correct 1 mangled name by hand'."
+        )
+        assert any(word in consequence.lower() for word in ["correct", "fix", "hand", "name", "priya"]), (
+            f"Consequence must mention what user must DO: {consequence}"
+        )
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_hallucinated_content_scenario(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Transcript is about birthday but label claims it's a wedding (hallucination)."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Happy birthday to you! All of us gathered for grandma's 80th birthday. She was so happy."
+        hallucinated_label = '{"title": "Grandma Wedding Celebration", "description": "Family wedding ceremony with grandma", "tags": ["wedding", "ceremony", "family"]}'
+
+        self._mock_scorer(mock_call_api, '{"score": 3, "reason": "hallucinated wedding content", "consequence": "user has to re-label this tape because it claims wedding content but transcript is about birthday"}')
+
+        success, score_data, err = scorer_rate_output(transcript, hallucinated_label)
+
+        assert success, f"scorer_rate_output failed: {err}"
+        assert score_data is not None
+        consequence = score_data.get("consequence") or ""
+
+        assert not _is_vague_consequence(consequence), (
+            f"FAIL: Hallucination scenario got vague consequence: '{consequence}'. "
+            f"Expected specific consequence like 'user has to correct hallucinated wedding content'."
+        )
+        assert any(word in consequence.lower() for word in ["correct", "fix", "change", "wedding", "birthday", "content"]), (
+            f"Consequence must mention what user must DO about hallucination: {consequence}"
+        )
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_generic_unknown_audio_label(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Label is generic 'Unknown Audio' - no specifics about tape content."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "The quick brown fox jumps over the lazy dog. Testing testing one two three."
+        generic_label = '{"title": "Unknown Audio", "description": "Audio recording", "tags": ["audio", "recording"]}'
+
+        self._mock_scorer(mock_call_api, '{"score": 2, "reason": "label is generic", "consequence": "user needs to write a proper title that describes the audio content like \'Fox jumps over dog test\'"}')
+
+        success, score_data, err = scorer_rate_output(transcript, generic_label)
+
+        assert success, f"scorer_rate_output failed: {err}"
+        assert score_data is not None
+        consequence = score_data.get("consequence") or ""
+
+        assert not _is_vague_consequence(consequence), (
+            f"FAIL: Generic label scenario got vague consequence: '{consequence}'. "
+            f"Expected specific consequence like 'user has to write a proper title'."
+        )
+        assert any(word in consequence.lower() for word in ["write", "create", "title", "label", "specific", "proper"]), (
+            f"Consequence must mention what user must DO for generic label: {consequence}"
+        )
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_multiple_mangled_names_scenario(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Transcript has multiple names mangled - consequence must be specific."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Uncle Rajesh and Auntie Sunita were at Mehul's wedding. We did bhangra."
+        bad_label = '{"title": "Family Event", "description": "People dancing at an event", "tags": ["dance", "event"]}'
+
+        self._mock_scorer(mock_call_api, '{"score": 5, "reason": "multiple names wrong", "consequence": "user should fix 3 mangled names: Uncle Rajesh→Uncle Rajesh, Auntie Sunita→Auntie Sunita, Mehul→Mehul (check spelling)"}')
+
+        success, score_data, err = scorer_rate_output(transcript, bad_label)
+
+        assert success, f"scorer_rate_output failed: {err}"
+        assert score_data is not None
+        consequence = score_data.get("consequence") or ""
+
+        assert not _is_vague_consequence(consequence), (
+            f"FAIL: Multiple mangled names got vague consequence: '{consequence}'. "
+            f"Expected 'user has to correct 3 mangled names by hand' or similar."
+        )
+        assert "3" in consequence or "three" in consequence.lower() or "multiple" in consequence.lower(), (
+            f"Consequence must specify number of mangled names: {consequence}"
+        )
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_whitespace_only_consequence_is_rejected(self, mock_model, mock_key, mock_url, mock_call_api):
+        """LLM returns empty or whitespace-only consequence - test should fail."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "Hello world testing"
+        bad_label = '{"title": "Test", "description": "Test", "tags": ["test"]}'
+
+        self._mock_scorer(mock_call_api, '{"score": 4, "reason": "label issues", "consequence": "user must fix the label to be specific about the content"}')
+
+        success, score_data, err = scorer_rate_output(transcript, bad_label)
+
+        assert success, f"scorer_rate_output failed: {err}"
+        assert score_data is not None
+        consequence = score_data.get("consequence") or ""
+
+        assert not _is_vague_consequence(consequence), (
+            f"FAIL: Empty/whitespace consequence is vague slop: '{consequence}'. "
+            f"Expected specific consequence stating what user must do."
+        )
+
+    @patch("agent._call_api")
+    @patch("agent.get_api_url")
+    @patch("agent.get_api_key")
+    @patch("agent.get_model_name")
+    def test_consequence_mentions_correct_action(self, mock_model, mock_key, mock_url, mock_call_api):
+        """Verify consequence actually specifies an action the user would take."""
+        mock_url.return_value = "http://fake:1234"
+        mock_key.return_value = "fake-key"
+        mock_model.return_value = "fake-model"
+
+        transcript = "We did bhangra at the sangeet ceremony. Navratri garba night was amazing."
+        bad_label = '{"title": "Party", "description": "Fun event", "tags": ["party"]}'
+
+        self._mock_scorer(mock_call_api, '{"score": 5, "reason": "missing cultural context", "consequence": "user would have to add cultural context manually"}')
+
+        success, score_data, err = scorer_rate_output(transcript, bad_label)
+
+        assert success, f"scorer_rate_output failed: {err}"
+        assert score_data is not None
+        consequence = score_data.get("consequence") or ""
+
+        assert "manually" in consequence.lower() or "by hand" in consequence.lower() or "correct" in consequence.lower(), (
+            f"Consequence must state HOW user does it (manually/by hand): {consequence}"
+        )
