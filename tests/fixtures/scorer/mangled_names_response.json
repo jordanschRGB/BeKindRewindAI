@@ -1,0 +1,16 @@
+{
+  "scores": {
+    "accuracy": 4,
+    "completeness": 9,
+    "label_quality": 7,
+    "hallucination": 9
+  },
+  "reasons": {
+    "accuracy": "3 names mangled: 'ananda my' should be 'Anandamayi Ma', 'satsong' should be 'satsang', 'ramana maharshi' should be 'Ramana Maharshi'",
+    "completeness": "Full transcript captured",
+    "label_quality": "Good title with minor formatting issues",
+    "hallucination": "No fabricated content"
+  },
+  "pass": false,
+  "consequence": "user has to correct 3 mangled names by hand: Anandamayi Ma, satsang, Ramana Maharshi"
+}
