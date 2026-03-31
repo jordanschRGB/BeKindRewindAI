@@ -1,14 +1,19 @@
 """Tests for harness/grading.py — threshold logic, pass/fail, consequence strings."""
 
+import json
+import re
 from unittest.mock import patch
 from harness.grading import (
     GRADING_CRITERIA,
     SCORE_MIN,
     SCORE_MAX,
+    SCORE_TIERS,
     validate_scores,
     check_thresholds,
     build_grading_prompt_section,
     format_failure_consequence,
+    get_tier,
+    grade_to_score_data,
 )
 from agent import scorer_rate_output
 
@@ -111,25 +116,24 @@ class TestCheckThresholds:
 
 
 class TestFormatFailureConsequence:
-    """Test human-readable consequence string generation."""
+    """Test corrections_needed list generation from failures."""
 
-    def test_no_failures_empty_string(self):
+    def test_no_failures_returns_list_with_empty_string(self):
         result = format_failure_consequence({})
-        assert result == ""
+        assert result == [""]
 
-    def test_single_failure(self):
+    def test_single_failure_returns_list_with_correction(self):
         failures = {"accuracy": {"score": 5, "threshold": 7}}
-        result = format_failure_consequence(failures)
-        assert "accuracy" in result
-        assert "5/7" in result
-        assert "Quality check failed" in result
+        corrections = {"accuracy": "Balbir → ball bir at 0:47"}
+        result = format_failure_consequence(failures, corrections)
+        assert isinstance(result, list)
+        assert len(result) == 4  # one entry per criterion
 
-    def test_single_failure_with_reason(self):
+    def test_single_failure_with_correction(self):
         failures = {"accuracy": {"score": 5, "threshold": 7}}
-        reasons = {"accuracy": "2 names mangled beyond recognition"}
-        result = format_failure_consequence(failures, reasons)
-        assert "2 names mangled" in result
-        assert "5/7" in result
+        corrections = {"accuracy": "Priya → Pria at 0:23"}
+        result = format_failure_consequence(failures, corrections)
+        assert "Priya → Pria at 0:23" in result
 
     def test_multiple_failures(self):
         failures = {
@@ -137,9 +141,8 @@ class TestFormatFailureConsequence:
             "hallucination": {"score": 6, "threshold": 8},
         }
         result = format_failure_consequence(failures)
-        assert "accuracy" in result
-        assert "hallucination" in result
-        assert ";" in result  # Multiple failures joined with semicolons
+        assert isinstance(result, list)
+        assert len(result) == 4
 
 
 class TestBuildGradingPromptSection:
@@ -160,11 +163,11 @@ class TestBuildGradingPromptSection:
         assert '"scores"' in section
         assert '"reasons"' in section
         assert '"pass"' in section
-        assert '"consequence"' in section
+        assert '"corrections_needed"' in section
 
-    def test_contains_consequence_instruction(self):
+    def test_contains_corrections_needed_instruction(self):
         section = build_grading_prompt_section()
-        assert "concrete human consequence" in section.lower() or "what the user would have to do" in section.lower()
+        assert "WRONG → CORRECT at" in section
 
 
 class TestGradingCriteriaConfig:
@@ -173,20 +176,12 @@ class TestGradingCriteriaConfig:
     def test_all_criteria_have_required_fields(self):
         for name, config in GRADING_CRITERIA.items():
             assert "description" in config, f"{name} missing description"
-            assert "weight" in config, f"{name} missing weight"
             assert "threshold" in config, f"{name} missing threshold"
 
     def test_thresholds_in_valid_range(self):
         for name, config in GRADING_CRITERIA.items():
             assert SCORE_MIN <= config["threshold"] <= SCORE_MAX, (
                 f"{name} threshold {config['threshold']} outside [{SCORE_MIN}, {SCORE_MAX}]"
-            )
-
-    def test_weights_are_valid(self):
-        valid_weights = {"high", "medium", "low"}
-        for name, config in GRADING_CRITERIA.items():
-            assert config["weight"] in valid_weights, (
-                f"{name} has invalid weight: {config['weight']}"
             )
 
 
@@ -396,3 +391,163 @@ class TestScorerProducesConcreteConsequences:
         assert "manually" in consequence.lower() or "by hand" in consequence.lower() or "correct" in consequence.lower(), (
             f"Consequence must state HOW user does it (manually/by hand): {consequence}"
         )
+
+
+class TestGetTierBoundaries:
+    """Test that every score 1-10 maps to exactly one tier (non-overlapping)."""
+
+    def test_critical_scores(self):
+        assert get_tier(1) == "CRITICAL"
+        assert get_tier(2) == "CRITICAL"
+
+    def test_fail_scores(self):
+        assert get_tier(3) == "FAIL"
+        assert get_tier(4) == "FAIL"
+
+    def test_questionable_scores(self):
+        assert get_tier(5) == "QUESTIONABLE"
+        assert get_tier(6) == "QUESTIONABLE"
+
+    def test_acceptable_scores(self):
+        assert get_tier(7) == "ACCEPTABLE"
+        assert get_tier(8) == "ACCEPTABLE"
+
+    def test_exceptional_scores(self):
+        assert get_tier(9) == "EXCEPTIONAL"
+        assert get_tier(10) == "EXCEPTIONAL"
+
+    def test_all_scores_have_exactly_one_tier(self):
+        for score in range(1, 11):
+            tier = get_tier(score)
+            count = sum(1 for name, lo, hi in SCORE_TIERS if lo <= score <= hi)
+            assert count == 1, f"Score {score} belongs to {count} tiers (should be exactly 1)"
+
+
+class TestCheckThresholdsFinalScoreGate:
+    """Test that check_thresholds correctly identifies when score = lowest criterion."""
+
+    def test_lowest_at_threshold_passes(self):
+        scores = {
+            "accuracy": 9,
+            "completeness": 7,
+            "label_quality": 9,
+            "hallucination": 9,
+        }
+        passed, failures = check_thresholds(scores)
+        assert passed is True
+        assert failures == {}
+
+    def test_lowest_below_threshold_fails(self):
+        scores = {
+            "accuracy": 6,
+            "completeness": 9,
+            "label_quality": 9,
+            "hallucination": 9,
+        }
+        passed, failures = check_thresholds(scores)
+        assert passed is False
+        assert "accuracy" in failures
+        assert len(failures) == 1
+        assert failures["accuracy"]["score"] == 6
+
+    def test_lowest_criterion_is_accuracy(self):
+        scores = {
+            "accuracy": 5,
+            "completeness": 9,
+            "label_quality": 9,
+            "hallucination": 9,
+        }
+        passed, failures = check_thresholds(scores)
+        assert passed is False
+        assert failures == {"accuracy": {"score": 5, "threshold": 7}}
+
+    def test_lowest_criterion_is_hallucination(self):
+        scores = {
+            "accuracy": 10,
+            "completeness": 10,
+            "label_quality": 10,
+            "hallucination": 7,
+        }
+        passed, failures = check_thresholds(scores)
+        assert passed is False
+        assert failures == {"hallucination": {"score": 7, "threshold": 8}}
+
+
+class TestGradeToScoreData:
+    """Test the bridge function that converts Dreamer output to internal format."""
+
+    def test_full_grades_output_to_score_data(self):
+        grades_output = {
+            "scores": {"accuracy": 8, "completeness": 9, "label_quality": 7, "hallucination": 10},
+            "reasons": {"accuracy": "good transcription", "completeness": "complete", "label_quality": "specific title", "hallucination": "no hallucination"},
+            "corrections_needed": ["", "", "", ""],
+            "pass": True,
+            "score": 7,
+        }
+        result = grade_to_score_data(grades_output)
+        assert result["score"] == 7
+        assert result["pass"] is True
+        assert result["reasons"] == {"accuracy": "good transcription", "completeness": "complete", "label_quality": "specific title", "hallucination": "no hallucination"}
+        assert result["corrections_needed"] == ["", "", "", ""]
+
+    def test_failing_grades_output(self):
+        grades_output = {
+            "scores": {"accuracy": 5, "completeness": 9, "label_quality": 9, "hallucination": 9},
+            "reasons": {"accuracy": "name Priya transcribed as Pria", "completeness": "complete", "label_quality": "good", "hallucination": "good"},
+            "corrections_needed": ["Priya → Pria at 0:23", "", "", ""],
+            "pass": False,
+            "score": 5,
+        }
+        result = grade_to_score_data(grades_output)
+        assert result["score"] == 5
+        assert result["pass"] is False
+        assert "Priya → Pria at 0:23" in result["corrections_needed"]
+
+
+class TestCorrectionsNeededFormat:
+    """Test that corrections_needed entries follow the required format."""
+
+    def test_corrections_needed_format_wrong_to_correct_at_timestamp(self):
+        corrections = ["Balbir → ball bir at 0:47"]
+        assert "→" in corrections[0]
+        assert "at" in corrections[0]
+        assert re.search(r"\d+:\d\d", corrections[0]) is not None
+
+    def test_corrections_needed_not_vague(self):
+        vague_patterns = [
+            "some words may be inaccurate",
+            "user must fix N names",
+            "there are some issues",
+            "minor issues",
+            "could be better",
+        ]
+        corrections = ["Balbir → ball bir at 0:47"]
+        for vague in vague_patterns:
+            assert vague not in corrections[0], f"correction '{corrections[0]}' contains vague phrase '{vague}'"
+
+    def test_empty_string_for_passing_criterion(self):
+        corrections = ["", "", "", ""]
+        assert all(c == "" for c in corrections)
+
+
+class TestBuildGradingPromptSectionJSON:
+    """Test that build_grading_prompt_section outputs parseable JSON format."""
+
+    def test_json_example_parses(self):
+        section = build_grading_prompt_section()
+        json_match = re.search(r'\{[^}]+"scores"[^}]+\}', section, re.DOTALL)
+        assert json_match is not None, "No JSON example found in prompt section"
+        json_str = json_match.group()
+        try:
+            data = json.loads(json_str)
+            assert "scores" in data
+            assert "reasons" in data
+            assert "corrections_needed" in data
+            assert "pass" in data
+        except json.JSONDecodeError as e:
+            raise AssertionError(f"JSON example in prompt does not parse: {e}")
+
+    def test_corrections_needed_is_list_format(self):
+        section = build_grading_prompt_section()
+        assert '"corrections_needed": [' in section
+        assert '"score": N' in section
