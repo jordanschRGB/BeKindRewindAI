@@ -243,20 +243,19 @@ class TestScorerProducesConcreteConsequences:
         transcript = "Mera naam Priya hai. Main kal school ja rahi thi. Meri best friend ki shaadi hai."
         bad_label = '{"title": "Pria Goes to School", "description": "Girl talks about her day", "tags": ["school", "girl", "talk"]}'
 
-        self._mock_scorer(mock_call_api, '{"score": 4, "reason": "name Priya was transcribed as Pria", "consequence": "user must correct 1 mangled name (Priya→Pria)"}')
+        self._mock_scorer(mock_call_api, '{"score": 4, "reason": "name Priya was transcribed as Pria", "corrections_needed": ["Priya → Pria at 00:03"], "pass": false}')
 
         success, score_data, err = scorer_rate_output(transcript, bad_label)
 
         assert success, f"scorer_rate_output failed: {err}"
         assert score_data is not None
-        consequence = score_data.get("consequence") or ""
+        corrections_needed = score_data.get("corrections_needed", [])
+        pass_flag = score_data.get("pass", True)
 
-        assert not _is_vague_consequence(consequence), (
-            f"FAIL: Mangled name scenario got vague consequence: '{consequence}'. "
-            f"Expected specific consequence like 'user has to correct 1 mangled name by hand'."
-        )
-        assert any(word in consequence.lower() for word in ["correct", "fix", "hand", "name", "priya"]), (
-            f"Consequence must mention what user must DO: {consequence}"
+        assert pass_flag is False, "Score 4 should result in pass=false"
+        assert len(corrections_needed) == 1, f"Expected 1 correction, got {len(corrections_needed)}: {corrections_needed}"
+        assert "Priya" in corrections_needed[0] and "Pria" in corrections_needed[0], (
+            f"Correction must specify exact wrong and correct strings: {corrections_needed[0]}"
         )
 
     @patch("agent._call_api")
@@ -272,20 +271,19 @@ class TestScorerProducesConcreteConsequences:
         transcript = "Happy birthday to you! All of us gathered for grandma's 80th birthday. She was so happy."
         hallucinated_label = '{"title": "Grandma Wedding Celebration", "description": "Family wedding ceremony with grandma", "tags": ["wedding", "ceremony", "family"]}'
 
-        self._mock_scorer(mock_call_api, '{"score": 3, "reason": "hallucinated wedding content", "consequence": "user has to re-label this tape because it claims wedding content but transcript is about birthday"}')
+        self._mock_scorer(mock_call_api, '{"score": 3, "reason": "hallucinated wedding content", "corrections_needed": ["Grandma Wedding Celebration → Birthday Celebration at 00:01"], "pass": false}')
 
         success, score_data, err = scorer_rate_output(transcript, hallucinated_label)
 
         assert success, f"scorer_rate_output failed: {err}"
         assert score_data is not None
-        consequence = score_data.get("consequence") or ""
+        corrections_needed = score_data.get("corrections_needed", [])
+        pass_flag = score_data.get("pass", True)
 
-        assert not _is_vague_consequence(consequence), (
-            f"FAIL: Hallucination scenario got vague consequence: '{consequence}'. "
-            f"Expected specific consequence like 'user has to correct hallucinated wedding content'."
-        )
-        assert any(word in consequence.lower() for word in ["correct", "fix", "change", "wedding", "birthday", "content"]), (
-            f"Consequence must mention what user must DO about hallucination: {consequence}"
+        assert pass_flag is False, "Score 3 should result in pass=false"
+        assert len(corrections_needed) >= 1, f"Expected at least 1 correction, got {len(corrections_needed)}"
+        assert any("wedding" in c.lower() and "birthday" in c.lower() for c in corrections_needed), (
+            f"Correction must specify hallucinated content: {corrections_needed}"
         )
 
     @patch("agent._call_api")
@@ -301,20 +299,19 @@ class TestScorerProducesConcreteConsequences:
         transcript = "The quick brown fox jumps over the lazy dog. Testing testing one two three."
         generic_label = '{"title": "Unknown Audio", "description": "Audio recording", "tags": ["audio", "recording"]}'
 
-        self._mock_scorer(mock_call_api, '{"score": 2, "reason": "label is generic", "consequence": "user needs to write a proper title that describes the audio content like \'Fox jumps over dog test\'"}')
+        self._mock_scorer(mock_call_api, '{"score": 2, "reason": "label is generic", "corrections_needed": ["Unknown Audio → Fox Jumps Over Lazy Dog Test at 00:01"], "pass": false}')
 
         success, score_data, err = scorer_rate_output(transcript, generic_label)
 
         assert success, f"scorer_rate_output failed: {err}"
         assert score_data is not None
-        consequence = score_data.get("consequence") or ""
+        corrections_needed = score_data.get("corrections_needed", [])
+        pass_flag = score_data.get("pass", True)
 
-        assert not _is_vague_consequence(consequence), (
-            f"FAIL: Generic label scenario got vague consequence: '{consequence}'. "
-            f"Expected specific consequence like 'user has to write a proper title'."
-        )
-        assert any(word in consequence.lower() for word in ["write", "create", "title", "label", "specific", "proper"]), (
-            f"Consequence must mention what user must DO for generic label: {consequence}"
+        assert pass_flag is False, "Score 2 should result in pass=false"
+        assert len(corrections_needed) == 1, f"Expected 1 correction, got {len(corrections_needed)}: {corrections_needed}"
+        assert "Unknown Audio" in corrections_needed[0], (
+            f"Correction must specify the generic title that needs fixing: {corrections_needed[0]}"
         )
 
     @patch("agent._call_api")
@@ -330,21 +327,17 @@ class TestScorerProducesConcreteConsequences:
         transcript = "Uncle Rajesh and Auntie Sunita were at Mehul's wedding. We did bhangra."
         bad_label = '{"title": "Family Event", "description": "People dancing at an event", "tags": ["dance", "event"]}'
 
-        self._mock_scorer(mock_call_api, '{"score": 5, "reason": "multiple names wrong", "consequence": "user should fix 3 mangled names: Uncle Rajesh→Uncle Rajesh, Auntie Sunita→Auntie Sunita, Mehul→Mehul (check spelling)"}')
+        self._mock_scorer(mock_call_api, '{"score": 5, "reason": "multiple names wrong", "corrections_needed": ["Rajeshh → Rajesh at 00:01", "Sunitaa → Sunita at 00:02", "Mehull → Mehul at 00:03"], "pass": false}')
 
         success, score_data, err = scorer_rate_output(transcript, bad_label)
 
         assert success, f"scorer_rate_output failed: {err}"
         assert score_data is not None
-        consequence = score_data.get("consequence") or ""
+        corrections_needed = score_data.get("corrections_needed", [])
+        pass_flag = score_data.get("pass", True)
 
-        assert not _is_vague_consequence(consequence), (
-            f"FAIL: Multiple mangled names got vague consequence: '{consequence}'. "
-            f"Expected 'user has to correct 3 mangled names by hand' or similar."
-        )
-        assert "3" in consequence or "three" in consequence.lower() or "multiple" in consequence.lower(), (
-            f"Consequence must specify number of mangled names: {consequence}"
-        )
+        assert pass_flag is False, "Score 5 should result in pass=false"
+        assert len(corrections_needed) == 3, f"Expected 3 corrections, got {len(corrections_needed)}: {corrections_needed}"
 
     @patch("agent._call_api")
     @patch("agent.get_api_url")
@@ -359,17 +352,18 @@ class TestScorerProducesConcreteConsequences:
         transcript = "Hello world testing"
         bad_label = '{"title": "Test", "description": "Test", "tags": ["test"]}'
 
-        self._mock_scorer(mock_call_api, '{"score": 4, "reason": "label issues", "consequence": "user must fix the label to be specific about the content"}')
+        self._mock_scorer(mock_call_api, '{"score": 4, "reason": "label issues", "corrections_needed": ["Test → Specific Test Title at 00:01"], "pass": false}')
 
         success, score_data, err = scorer_rate_output(transcript, bad_label)
 
         assert success, f"scorer_rate_output failed: {err}"
         assert score_data is not None
-        consequence = score_data.get("consequence") or ""
+        corrections_needed = score_data.get("corrections_needed", [])
+        pass_flag = score_data.get("pass", True)
 
-        assert not _is_vague_consequence(consequence), (
-            f"FAIL: Empty/whitespace consequence is vague slop: '{consequence}'. "
-            f"Expected specific consequence stating what user must do."
+        assert pass_flag is False, "Score 4 should result in pass=false"
+        assert len(corrections_needed) == 1 and corrections_needed[0].strip(), (
+            f"corrections_needed should have specific entries, got: {corrections_needed}"
         )
 
     @patch("agent._call_api")
@@ -385,14 +379,17 @@ class TestScorerProducesConcreteConsequences:
         transcript = "We did bhangra at the sangeet ceremony. Navratri garba night was amazing."
         bad_label = '{"title": "Party", "description": "Fun event", "tags": ["party"]}'
 
-        self._mock_scorer(mock_call_api, '{"score": 5, "reason": "missing cultural context", "consequence": "user would have to add cultural context manually"}')
+        self._mock_scorer(mock_call_api, '{"score": 5, "reason": "missing cultural context", "corrections_needed": ["Party → Navratri Garba Night at 00:01"], "pass": false}')
 
         success, score_data, err = scorer_rate_output(transcript, bad_label)
 
         assert success, f"scorer_rate_output failed: {err}"
         assert score_data is not None
-        consequence = score_data.get("consequence") or ""
+        corrections_needed = score_data.get("corrections_needed", [])
+        pass_flag = score_data.get("pass", True)
 
-        assert "manually" in consequence.lower() or "by hand" in consequence.lower() or "correct" in consequence.lower(), (
-            f"Consequence must state HOW user does it (manually/by hand): {consequence}"
+        assert pass_flag is False, "Score 5 should result in pass=false"
+        assert len(corrections_needed) == 1, f"Expected 1 correction, got {len(corrections_needed)}"
+        assert "Party" in corrections_needed[0], (
+            f"Correction must specify what needs to change: {corrections_needed[0]}"
         )

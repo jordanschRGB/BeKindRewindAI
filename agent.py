@@ -362,7 +362,7 @@ def scorer_rate_output(transcript, labels_json):
 
     Returns:
         (success: bool, score_data: dict|None, error: str|None)
-        score_data: {"score": int, "reason": str, "consequence": str|None}
+        score_data: {"score": int, "reason": str, "corrections_needed": list, "pass": bool}
     """
     api_url = get_api_url()
     if not api_url:
@@ -397,7 +397,8 @@ def scorer_rate_output(transcript, labels_json):
             return True, {
                 "score": int(data.get("score", 0)),
                 "reason": str(data.get("reason", "")),
-                "consequence": data.get("consequence"),
+                "corrections_needed": data.get("corrections_needed", []),
+                "pass": bool(data.get("pass", False)),
             }, None
         except (json.JSONDecodeError, ValueError):
             pass
