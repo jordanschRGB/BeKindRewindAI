@@ -333,36 +333,38 @@ SCORER_SYSTEM = """You score the quality of VHS tape labels.
 
 You will receive a transcript and the generated label (title, description, tags).
 
-Rate 1-10 and state what happened to the human because of any errors.
+Rate 1-10 on these 4 criteria:
+1. ACCURACY: Does the title/description match what the transcript actually says? No hallucinated names or events.
+2. COMPLETENESS: Are all significant topics, names, and events from the transcript captured in title, description, or tags?
+3. LABEL_QUALITY: Is the title specific and descriptive? Are tags relevant? Is formatting correct?
+4. HALLUCINATION: Are there any names, dates, or events in the label that don't appear in the transcript?
 
-Rules:
-- 9-10: Label is accurate, grounded in transcript, properly formatted
-- 6-8: Minor issues (title slightly off, missing a relevant tag)
-- 3-5: Significant issues (wrong topic, hallucinated names not in transcript)
-- 1-2: Unusable (broken JSON, completely wrong content, generic "Unknown Audio")
+Scoring:
+- 9-10: Passes all 4 criteria. Accurate, complete, well-formatted.
+- 7-8: Minor issues in 1-2 criteria. Small gaps or slight imprecisions.
+- 5-6: Fails 1-2 criteria significantly, or 3-4 criteria minorly.
+- 3-4: Fails 2-3 criteria significantly. Notable gaps or 1-2 hallucinations.
+- 1-2: Fails all 4 criteria or produces unusable output (broken JSON, completely wrong content).
 
-For scores below 7, you MUST state the concrete human consequence in one sentence.
-Be specific about what the user would have to DO to fix the issue.
-DO NOT be vague or generic.
-BAD examples: "some words may be inaccurate", "minor issues", "could be better", "room for improvement", "may want to", "slightly off", "needs improvement"
-GOOD examples: "user must correct 1 mangled name (Priya→Pria)", 
-               "user has to re-label this tape because the title is completely wrong",
-               "user needs to write a specific title like 'Grandma\\'s 80th Birthday Party'",
-               "user should fix 3 mangled names: bhangra→bangra, Nan→Nann, Priya→Briya"
+For each criterion that fails, provide a "WRONG → CORRECT at MM:SS" correction if timestamp evidence exists, or just describe the issue if no timestamp is available.
+Be specific: cite exact transcript evidence (names, phrases, timestamps).
 
-Respond as JSON: {"score": N, "reason": "...", "consequence": "..."}
-consequence is null for scores 7+."""
+Respond as JSON: {"score": int, "reason": str, "corrections_needed": list[str], "pass": bool}
+- score: integer 1-10
+- reason: explains which criteria failed and why, citing transcript evidence
+- corrections_needed: list of "WRONG → CORRECT at MM:SS" strings (empty list if score >= 7)
+- pass: true if score >= 7, false otherwise"""
 
 
 def scorer_rate_output(transcript, labels_json):
-    """Scorer agent: rate label quality and state consequences.
+    """Scorer agent: rate label quality and state corrections needed.
 
     Isolated context — only sees transcript and output.
     Does NOT see conversation history or memory.
 
     Returns:
         (success: bool, score_data: dict|None, error: str|None)
-        score_data: {"score": int, "reason": str, "consequence": str|None}
+        score_data: {"score": int, "reason": str, "corrections_needed": list[str], "pass": bool}
     """
     api_url = get_api_url()
     if not api_url:
@@ -394,10 +396,12 @@ def scorer_rate_output(transcript, labels_json):
     if start >= 0 and end > start:
         try:
             data = json.loads(text[start:end])
+            score = int(data.get("score", 0))
             return True, {
-                "score": int(data.get("score", 0)),
+                "score": score,
                 "reason": str(data.get("reason", "")),
-                "consequence": data.get("consequence"),
+                "corrections_needed": data.get("corrections_needed", []),
+                "pass": score >= 7,
             }, None
         except (json.JSONDecodeError, ValueError):
             pass
