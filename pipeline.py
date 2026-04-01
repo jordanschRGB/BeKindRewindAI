@@ -110,15 +110,18 @@ def _pipeline_thread(session, config, on_complete):
     save_metadata(output_dir, base_name, metadata)
 
     # AI post-processing
+    ai_errors = []
+    
     try:
-        # Transcription via faster-whisper (no model download needed — auto-downloads)
         from engine.transcribe import is_whisper_available, transcribe_video as whisper_transcribe
         if is_whisper_available():
             t_success, transcript, t_err = whisper_transcribe(tape["file"])
             if t_success and transcript:
                 metadata["transcript"] = transcript
+            elif t_err:
+                ai_errors.append(f"transcribe: {t_err}")
+                logger.warning("Transcription failed: %s", t_err)
 
-        # Smart labeling via Qwen (needs GGUF model downloaded)
         from engine.inference import is_model_downloaded
         if is_model_downloaded("qwen-labeler"):
             from engine.labeler import label_video
@@ -134,13 +137,15 @@ def _pipeline_thread(session, config, on_complete):
                             os.rename(tape["file"], new_final)
                             tape["file"] = new_final
                             metadata["filename"] = os.path.basename(new_final)
-                        except OSError:
-                            pass
+                        except OSError as e:
+                            logger.warning("Failed to rename file to %s: %s", new_final, e)
 
-        # Re-save metadata with AI data
         save_metadata(output_dir, base_name, metadata)
     except Exception:
         logger.exception("AI post-processing failed")
+    
+    if ai_errors:
+        tape["ai_errors"] = ai_errors
 
     session.complete_tape(validation, file_path=tape["file"])
 

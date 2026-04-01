@@ -11,6 +11,7 @@ Architecture: Three logical agents on one model, isolated context per call.
 
 import json
 import os
+import re
 import time
 
 from engine.transcribe import is_whisper_available
@@ -31,16 +32,6 @@ def _load_skill(name):
 
 
 WHISPER_BRIEFING = _load_skill("whisper_briefing")
-
-# Domain vocabulary presets for Whisper initial_prompt
-DOMAIN_PRESETS = {
-    "spiritual": "Om Namah Shivaya, satsang, kirtan, dharma, sangha, pranayama, Anandamayi, ashram, mantra, puja, bhajan, guru, swami, meditation, breathwork, ceremony, chakra, kundalini, tantra, vedanta, sutra, namaste",
-    "family": "birthday, Christmas, Thanksgiving, wedding, graduation, baby, kids, grandma, grandpa, vacation, holiday, backyard, kitchen, living room",
-    "sports": "game, score, team, coach, practice, tournament, championship, halftime, quarterback, touchdown, goal, foul, referee",
-    "music": "concert, band, guitar, drums, bass, vocals, solo, encore, setlist, venue, stage, amp, microphone",
-    "church": "sermon, pastor, reverend, congregation, hymn, choir, prayer, scripture, gospel, communion, baptism, altar, fellowship",
-    "general": "",
-}
 
 # System prompt for the agent's conversational behavior
 AGENT_SYSTEM = """You are the Archivist — MemoryVault's assistant. You help people digitize their VHS tapes and cassettes.
@@ -205,17 +196,7 @@ class MemoryVaultAgent:
             }
 
         # Try to detect domain from keywords
-        domain = "general"
-        if any(w in lower for w in ["kirtan", "meditation", "spiritual", "ashram", "yoga", "mantra", "healing", "ceremony"]):
-            domain = "spiritual"
-        elif any(w in lower for w in ["family", "christmas", "birthday", "wedding", "kids", "home video"]):
-            domain = "family"
-        elif any(w in lower for w in ["church", "sermon", "gospel", "choir"]):
-            domain = "church"
-        elif any(w in lower for w in ["concert", "band", "music", "gig", "show"]):
-            domain = "music"
-        elif any(w in lower for w in ["game", "sports", "football", "baseball"]):
-            domain = "sports"
+        domain = _detect_domain(user_message)
 
         if self.state in ("greeting", "configuring"):
             self.state = "configuring"
@@ -406,31 +387,45 @@ def scorer_rate_output(transcript, labels_json):
 
 
 # ── Memory System ────────────────────────────────────────────────────────────
-# Dual backend: RuVector (semantic, with biomimetic decay) + flat markdown.
-# Flat file is always written (human-readable, fallback).
-# RuVector enables semantic retrieval so we load RELEVANT memories, not ALL.
+# Flat file backend only (human-readable markdown).
+# BM25-style keyword matching for relevant vocabulary retrieval.
 
 import logging as _logging
+import re
 
 _mem_logger = _logging.getLogger(__name__ + ".memory")
 
 MEMORY_FILE = os.path.join(os.path.expanduser("~"), ".memoryvault", "archivist_memory.md")
-
-# Lazy import to avoid hard dependency
-_ruvector = None
+MAX_MEMORY_LINES = 2000
 
 
-def _get_ruvector():
-    """Lazy-load the RuVector memory backend."""
-    global _ruvector
-    if _ruvector is None:
-        try:
-            from harness import memory as _rv
-            _ruvector = _rv
-        except ImportError:
-            _mem_logger.warning("harness.memory not available, RuVector disabled")
-            _ruvector = False
-    return _ruvector if _ruvector else None
+def _detect_domain(text):
+    """Detect domain from text using shared keyword logic.
+    
+    Returns domain key from DOMAIN_PRESETS or 'general'.
+    """
+    lower = text.lower()
+    domain_keywords = {
+        "spiritual": ["kirtan", "meditation", "spiritual", "ashram", "yoga", "mantra", "healing", "ceremony", "pranayama", "satsang"],
+        "family": ["family", "christmas", "birthday", "wedding", "kids", "home video", "grandma", "grandpa", "baby"],
+        "church": ["church", "sermon", "gospel", "choir", "pastor", "reverend", "hymn"],
+        "music": ["concert", "band", "music", "gig", "show", "guitar", "drums"],
+        "sports": ["game", "sports", "football", "baseball", "score", "team", "coach"],
+    }
+    for domain, keywords in domain_keywords.items():
+        if any(re.search(r'\b' + re.escape(kw) + r'\b', lower) for kw in keywords):
+            return domain
+    return "general"
+
+
+DOMAIN_PRESETS = {
+    "spiritual": "Om Namah Shivaya, satsang, kirtan, dharma, sangha, pranayama, Anandamayi, ashram, mantra, puja, bhajan, guru, swami, meditation, breathwork, ceremony, chakra, kundalini, tantra, vedanta, sutra, namaste",
+    "family": "birthday, Christmas, Thanksgiving, wedding, graduation, baby, kids, grandma, grandpa, vacation, holiday, backyard, kitchen, living room",
+    "sports": "game, score, team, coach, practice, tournament, championship, halftime, quarterback, touchdown, goal, foul, referee",
+    "music": "concert, band, guitar, drums, bass, vocals, solo, encore, setlist, venue, stage, amp, microphone",
+    "church": "sermon, pastor, reverend, congregation, hymn, choir, prayer, scripture, gospel, communion, baptism, altar, fellowship",
+    "general": "",
+}
 
 
 def _load_flat_memory():
@@ -442,34 +437,86 @@ def _load_flat_memory():
 
 
 def load_memory(query=None):
-    """Load memory, optionally with semantic search.
-
-    If query is provided and RuVector is available, returns semantically
-    relevant memories instead of the entire file. Falls back to flat file.
+    """Load memory, optionally filtered by query domain.
+    
+    If query is provided, returns vocabulary entries relevant to the domain
+    detected from the query. Falls back to full flat file.
     """
     if query:
-        rv = _get_ruvector()
-        if rv:
-            try:
-                results = rv.search_memory(query, top_k=10)
-                if results:
-                    parts = []
-                    for r in results:
-                        content = r.get("content", "") if isinstance(r, dict) else str(r)
-                        parts.append(content)
-                    return "\n".join(parts)
-            except Exception as e:
-                _mem_logger.warning("RuVector search failed, falling back to flat file: %s", e)
+        domain = _detect_domain(query)
+        if domain != "general":
+            preset = DOMAIN_PRESETS.get(domain, "")
+            if preset:
+                return preset
 
-    # Fallback: return full flat file
     return _load_flat_memory()
 
 
 def save_memory(content):
     """Write the full memory file."""
     os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
-    with open(MEMORY_FILE, "w") as f:
-        f.write(content)
+    try:
+        with open(MEMORY_FILE, "w") as f:
+            f.write(content)
+        return True
+    except OSError as e:
+        _mem_logger.error("Failed to write memory file: %s", e)
+        return False
+
+
+def _prune_memory(memory):
+    """Prune memory if it exceeds MAX_MEMORY_LINES.
+    
+    Keeps most recent entries (bottom of file).
+    """
+    lines = memory.split("\n")
+    if len(lines) <= MAX_MEMORY_LINES:
+        return memory
+    
+    pruned_lines = lines[-MAX_MEMORY_LINES:]
+    
+    header_lines = []
+    for line in pruned_lines:
+        if line.startswith("#"):
+            header_lines.append(line)
+        else:
+            break
+    
+    if len(header_lines) < len(pruned_lines):
+        pass
+    else:
+        return memory
+    
+    return "\n".join(pruned_lines)
+
+
+VAGUE_CONSEQUENCE_PATTERNS = [
+    r"^[\s,.\-:]*$",
+    r"^some\s",
+    r"^minor\s",
+    r"^could\sbe\s",
+    r"^may\sbe\s",
+    r"^might\sbe\s",
+    r"^room\sfor\s",
+    r"^needs?\s",
+    r"^slightly\s",
+    r"^a\sbit\s",
+    r"^probably\s",
+    r"^perhaps\s",
+]
+
+
+def _is_vague_consequence(text):
+    """Return True if consequence is vague slop, not specific enough to be useful."""
+    if not text or not text.strip():
+        return True
+    lower = text.lower().strip()
+    if len(lower) < 10:
+        return True
+    for pattern in VAGUE_CONSEQUENCE_PATTERNS:
+        if re.match(pattern, lower):
+            return True
+    return False
 
 
 def append_memory(section, entry):
@@ -479,108 +526,40 @@ def append_memory(section, entry):
     if not memory:
         memory = "# Archivist Memory\n\n"
 
-    # Find or create section
     section_header = f"## {section}"
     if section_header not in memory:
         memory += f"\n{section_header}\n"
 
-    # Append entry
     memory += f"- {entry}\n"
+    
+    memory = _prune_memory(memory)
     save_memory(memory)
-
-    # Also store in RuVector
-    rv = _get_ruvector()
-    if rv:
-        try:
-            rv.store_memory(f"{section}: {entry}", {"type": section.lower()})
-        except Exception as e:
-            _mem_logger.warning("RuVector store failed (flat file still written): %s", e)
 
 
 def append_vocabulary(words):
     """Add discovered vocabulary to memory for future sessions.
-
-    Writes to flat file (human-readable backup) and calls rv.store_vocabulary()
-    ONLY — does NOT call append_memory() to avoid double-writing to RuVector.
+    
+    Deduplicates against existing entries. Validates that words look like
+    vocabulary (not scorer consequence text). Logs failures.
     """
-    # Flat file only (no rv.store_memory call here)
+    if not words or not words.strip():
+        _mem_logger.warning("append_vocabulary called with empty words")
+        return
+    
+    words_lower = words.lower()
+    if _is_vague_consequence(words):
+        _mem_logger.warning("append_vocabulary called with vague consequence-like text: %s", words[:100])
+        return
+    
     memory = _load_flat_memory()
     if not memory:
         memory = "# Archivist Memory\n\n"
+    
     if "## Vocabulary" not in memory:
         memory += "\n## Vocabulary\n"
-    memory += f"- {words}\n"
-    save_memory(memory)
-
-    # RuVector: vocabulary-typed store only (not store_memory, not append_memory)
-    rv = _get_ruvector()
-    if rv:
-        try:
-            rv.store_vocabulary(words)
-        except Exception as e:
-            _mem_logger.warning("RuVector vocabulary store failed: %s", e)
-
-
-def append_session_log(summary):
-    """Log a completed session to flat file and RuVector.
-
-    Writes to flat file directly and calls rv.store_session() ONLY —
-    does NOT call append_memory() to avoid double-writing to RuVector.
-    """
-    timestamp = time.strftime("%Y-%m-%d %H:%M")
-    entry = f"{timestamp}: {summary}"
-
-    # Flat file only (no rv.store_memory call here)
-    memory = _load_flat_memory()
-    if not memory:
-        memory = "# Archivist Memory\n\n"
-    if "## Sessions" not in memory:
-        memory += "\n## Sessions\n"
-    memory += f"- {entry}\n"
-    save_memory(memory)
-
-    # RuVector: session-typed store only (not store_memory, not append_memory)
-    rv = _get_ruvector()
-    if rv:
-        try:
-            rv.store_session(summary)
-        except Exception as e:
-            _mem_logger.warning("RuVector session store failed: %s", e)
-
-
-def load_relevant_vocabulary(description, top_k=20):
-    """Load vocabulary relevant to a specific tape description.
-
-    Instead of loading ALL vocabulary (which overflows context), this
-    uses RuVector's semantic search to find the top-k most relevant
-    vocabulary entries. Biomimetic decay means frequently-useful terms
-    reinforce while one-off words fade naturally.
-
-    Falls back to loading all vocabulary from flat file if RuVector
-    is unavailable.
-
-    Args:
-        description: What's being digitized (tape description).
-        top_k: Max vocabulary entries to retrieve.
-
-    Returns vocabulary string.
-    """
-    rv = _get_ruvector()
-    if rv:
-        try:
-            vocab = rv.get_relevant_vocabulary(description, top_k=top_k)
-            if vocab:
-                return vocab
-        except Exception as e:
-            _mem_logger.warning("RuVector vocabulary retrieval failed, falling back: %s", e)
-
-    # Fallback: extract vocabulary section from flat file
-    memory = _load_flat_memory()
-    if not memory:
-        return ""
-
+    
+    existing_lines = set()
     in_vocab = False
-    lines = []
     for line in memory.split("\n"):
         if line.strip() == "## Vocabulary":
             in_vocab = True
@@ -588,6 +567,123 @@ def load_relevant_vocabulary(description, top_k=20):
         if in_vocab and line.startswith("## "):
             break
         if in_vocab and line.strip().startswith("- "):
-            lines.append(line.strip()[2:])
+            existing_lines.add(line.strip()[2:].lower())
+    
+    new_words = [w.strip() for w in words.split(",") if w.strip()]
+    added = []
+    skipped = []
+    
+    for word in new_words:
+        word_lower = word.lower()
+        if word_lower in existing_lines:
+            skipped.append(word)
+        else:
+            existing_lines.add(word_lower)
+            added.append(word)
+    
+    if added:
+        entry = ", ".join(added)
+        memory += f"- {entry}\n"
+        memory = _prune_memory(memory)
+        if not save_memory(memory):
+            _mem_logger.error("Failed to save vocabulary to memory file")
+            return
+    
+    if skipped:
+        _mem_logger.debug("Skipped %d duplicate vocabulary entries", len(skipped))
 
-    return ", ".join(lines)
+
+def append_session_log(summary):
+    """Log a completed session to flat file."""
+    timestamp = time.strftime("%Y-%m-%d %H:%M")
+    entry = f"{timestamp}: {summary}"
+
+    memory = _load_flat_memory()
+    if not memory:
+        memory = "# Archivist Memory\n\n"
+    if "## Sessions" not in memory:
+        memory += "\n## Sessions\n"
+    memory += f"- {entry}\n"
+    memory = _prune_memory(memory)
+    save_memory(memory)
+
+
+def _tokenize(text):
+    """Simple tokenizer for BM25-style matching."""
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', ' ', text)
+    return [t for t in text.split() if len(t) >= 2]
+
+
+def load_relevant_vocabulary(description, top_k=20):
+    """Load vocabulary relevant to a specific tape description.
+
+    Uses BM25-style keyword matching to find top-k most relevant vocabulary
+    entries instead of loading ALL vocabulary (which overflows context).
+    Filters out single-character matches that cause false positives.
+
+    Args:
+        description: What's being digitized (tape description).
+        top_k: Max vocabulary entries to retrieve.
+
+    Returns vocabulary string.
+    """
+    memory = _load_flat_memory()
+    if not memory:
+        return ""
+
+    in_vocab = False
+    vocab_entries = []
+    for line in memory.split("\n"):
+        if line.strip() == "## Vocabulary":
+            in_vocab = True
+            continue
+        if in_vocab and line.startswith("## "):
+            break
+        if in_vocab and line.strip().startswith("- "):
+            entry = line.strip()[2:]
+            vocab_entries.append(entry)
+
+    if not vocab_entries:
+        return ""
+
+    desc_tokens = set(_tokenize(description))
+    if not desc_tokens:
+        return ", ".join(vocab_entries[:top_k])
+
+    desc_word_boundary = set(re.findall(r'\b\w+\b', description.lower()))
+    short_tokens = {t for t in desc_word_boundary if len(t) <= 3}
+
+    scored = []
+    for entry in vocab_entries:
+        entry_lower = entry.lower()
+        entry_tokens = set(_tokenize(entry))
+        
+        entry_word_boundary = set(re.findall(r'\b\w+\b', entry_lower))
+        
+        if short_tokens:
+            boundary_match = entry_word_boundary & desc_word_boundary
+        else:
+            boundary_match = entry_word_boundary & desc_tokens
+        
+        if not boundary_match:
+            if desc_tokens & entry_tokens:
+                boundary_match = desc_tokens & entry_tokens
+            else:
+                continue
+        
+        score = len(boundary_match)
+        
+        if short_tokens:
+            score += len(entry_word_boundary & short_tokens) * 0.5
+        
+        scored.append((score, entry))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    result_tokens = []
+    for score, entry in scored[:top_k]:
+        if score > 0:
+            result_tokens.append(entry)
+
+    return ", ".join(result_tokens) if result_tokens else ""
