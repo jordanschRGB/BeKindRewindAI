@@ -623,4 +623,6 @@ def load_relevant_vocabulary(description, top_k=20):
         if in_vocab and line.strip().startswith("- "):
             lines.append(line.strip()[2:])
 
-    return ", ".join(lines)
+    desc_words = set(description.lower().split())
+    filtered = [entry for entry in lines if any(w in entry.lower() for w in desc_words)]
+    return ", ".join(filtered)
