@@ -1,0 +1,16 @@
+{
+  "scores": {
+    "accuracy": 7,
+    "completeness": 8,
+    "label_quality": 6,
+    "hallucination": 3
+  },
+  "reasons": {
+    "accuracy": "Most names correct but some invented details",
+    "completeness": "Transcript mostly complete",
+    "label_quality": "Title acceptable but not verified",
+    "hallucination": "Model invented dialogue and events not in source audio"
+  },
+  "pass": false,
+  "consequence": "user must verify and remove fabricated dialogue and events before using transcript"
+}

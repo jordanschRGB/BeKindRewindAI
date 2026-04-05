@@ -1,0 +1,16 @@
+{
+  "scores": {
+    "accuracy": 9,
+    "completeness": 9,
+    "label_quality": 8,
+    "hallucination": 10
+  },
+  "reasons": {
+    "accuracy": "All names correct",
+    "completeness": "Full transcript captured",
+    "label_quality": "Good title and context",
+    "hallucination": "No fabricated content detected"
+  },
+  "pass": true,
+  "consequence": ""
+}

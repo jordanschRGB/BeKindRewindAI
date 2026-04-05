@@ -28,7 +28,7 @@ from engine.labeler import (
 from agent import (
     DOMAIN_PRESETS, WHISPER_BRIEFING,
     worker_generate_vocabulary, scorer_rate_output,
-    _load_flat_memory, append_vocabulary, append_session_log,
+    load_memory, append_memory, append_vocabulary, append_session_log,
 )
 
 # GAN loop configuration
@@ -496,7 +496,7 @@ def run_pipeline(user_description, video_path):
         results["steps"].append({"step": step, "time": time.strftime("%H:%M:%S"), **data})
 
     # 1. Load memory
-    memory = _load_flat_memory()
+    memory = load_memory()
     log("memory", {"loaded": bool(memory)})
 
     # 2. Generate vocabulary (Worker agent, isolated context)
@@ -597,7 +597,7 @@ def run_interactive():
     print("  Type 'quit' to exit.")
     print("=" * 50)
 
-    memory = _load_flat_memory()
+    memory = load_memory()
     greeting = step_greet(memory)
     print(f"\nArchivist: {greeting}\n")
 
