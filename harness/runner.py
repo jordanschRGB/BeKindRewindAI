@@ -528,10 +528,12 @@ def run_pipeline(user_description, video_path):
         })
 
         if dream.get("pass", True):
+            if vocab and not dream.get("quality_verified"):
+                dream["quality_verified"] = True
+            final_dream = dream
             break
 
         if iteration < MAX_ITERATIONS - 1:
-            # Feed structured feedback to correction step
             corrected_transcript, corrections = step_apply_corrections(
                 transcript, dream, vocab,
                 feedback=dream.get("reasons"),
@@ -540,17 +542,28 @@ def run_pipeline(user_description, video_path):
                 log("corrections", {"iteration": iteration + 1, "applied": corrections})
                 transcript = corrected_transcript
             else:
-                # No corrections possible — stop looping
+                threshold_pass, failures = check_thresholds(dream.get("scores", {}))
+                if not threshold_pass:
+                    from harness.grading import format_failure_consequence
+                    fail_desc = format_failure_consequence(failures, dream.get("reasons", {}))
+                    results["warning"] = f"No corrections possible and scores below threshold: {fail_desc}"
+                    results["quality_issue"] = True
+                    results["final_scores"] = dream.get("scores", {})
                 log("corrections", {"iteration": iteration + 1, "applied": [], "note": "no actionable corrections"})
                 break
         else:
-            # Circuit breaker: max iterations reached
-            results["warning"] = f"Quality threshold not met after {MAX_ITERATIONS} rounds"
+            threshold_pass, failures = check_thresholds(dream.get("scores", {}))
+            fail_desc = ""
+            if not threshold_pass:
+                from harness.grading import format_failure_consequence
+                fail_desc = format_failure_consequence(failures, dream.get("reasons", {}))
+            results["warning"] = f"Quality threshold not met after {MAX_ITERATIONS} rounds. {fail_desc}".strip()
             results["final_scores"] = dream.get("scores", {})
             log("circuit_breaker", {
                 "iteration": iteration + 1,
                 "scores": dream.get("scores", {}),
                 "consequence": dream.get("consequence", ""),
+                "quality_issue": not threshold_pass,
             })
 
     # 5. Label from (possibly corrected) transcript
@@ -582,6 +595,7 @@ def run_pipeline(user_description, video_path):
             "scores": final_dream.get("scores", {}),
             "pass": final_dream.get("pass", True),
             "consequence": final_dream.get("consequence", ""),
+            "quality_verified": final_dream.get("quality_verified", False),
         }
 
     return results
