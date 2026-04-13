@@ -144,14 +144,25 @@ def _call_llm(messages):
     """
     # Try HTTP API first
     api_url = get_api_url()
+    api_err = None
     if api_url:
         success, text, err = _call_api(messages)
         if success:
             return True, text, None
-        # API failed — fall through to local
+        api_err = err
 
     # Try local llama-cpp-python
-    return _call_local(messages)
+    success, text, err = _call_local(messages)
+    if success:
+        return True, text, None
+
+    # Both failed — combine errors for descriptive message
+    if api_err:
+        return False, None, f"API error: {api_err}; Local error: {err}"
+    elif not api_url:
+        return False, None, f"No API endpoint and local model not available: {err}"
+    else:
+        return False, None, err
 
 
 def sample_frames(video_path, count=4, output_dir=None):
@@ -212,6 +223,14 @@ def generate_labels(transcript=None, frame_paths=None):
     """
     if not transcript and not frame_paths:
         return False, None, "Need at least a transcript or video frames"
+
+    # Frame-based analysis is planned but not yet implemented
+    # When ready, frame_paths will be included in the prompt for multimodal analysis
+    if frame_paths:
+        import logging
+        logging.getLogger(__name__).debug(
+            f"Frame-based analysis not yet implemented, {len(frame_paths)} frames extracted but not used"
+        )
 
     # Build prompt — Qwen 3.5 4B handles 262K+ context, no need to truncate
     transcript_text = (transcript or "").strip()
