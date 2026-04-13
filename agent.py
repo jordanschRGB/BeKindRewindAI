@@ -11,6 +11,7 @@ Architecture: Three logical agents on one model, isolated context per call.
 
 import json
 import os
+import re
 import time
 
 from engine.transcribe import is_whisper_available
@@ -319,8 +320,33 @@ def worker_generate_vocabulary(user_description, memory_text=""):
     )
 
     if success and text:
-        # Clean up — strip markdown, extra whitespace
         vocab = text.strip().strip("`").strip()
+
+        sentence_patterns = (
+            r'\b(the|this|that|these|those|which|what|where|when|how|why|then|therefore|thus|hence)\s+',
+            r'\b(are|were|was|is|have|has|had|do|does|did|can|could|would|should|will|shall|may|might)\s+',
+            r'\b(here\s+is|here\s+are|this\s+is|these\s+are|that\s+is|those\s+are)\s+',
+            r'\b(please|thank|thanks|sorry|indeed|actually|basically|simply|just)\s+',
+            r'[.!?,;:\-—]{2,}',
+            r'^\s*(the|this|that|these|those|here|there)\s+.*\s+(is|are|was|were|would|could)\s+',
+        )
+        has_sentence = any(re.search(p, vocab, re.IGNORECASE) for p in sentence_patterns)
+
+        if has_sentence or ',' not in vocab:
+            match = re.search(r'^([a-zA-Z0-9\-\'\s]+(?:,\s*[a-zA-Z0-9\-\'\s]+)+)', vocab)
+            if match:
+                vocab = match.group(1).strip()
+            else:
+                words = [w.strip() for w in re.split(r'[,\s]+', vocab) if w.strip()]
+                vocab = ', '.join(words)
+
+        words = [w.strip() for w in vocab.split(',') if w.strip()]
+        if len(words) < 3:
+            return False, "", "Vocabulary too short (less than 3 words)"
+
+        if len(words) > 50:
+            _logging.warning(f"Vocabulary has {len(words)} words — may indicate LLM deviation from format")
+
         return True, vocab, None
     return False, "", err
 
