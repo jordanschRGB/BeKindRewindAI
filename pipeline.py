@@ -67,6 +67,7 @@ def _pipeline_thread(session, config, on_complete):
     if not os.path.exists(raw_path) or os.path.getsize(raw_path) == 0:
         tape["status"] = "failed"
         tape["error"] = "Recording produced no output"
+        session.set_state(SessionState.ERROR)
         session.complete_tape({"valid": False, "error": "No output"})
         if on_complete:
             on_complete(session)
@@ -74,6 +75,15 @@ def _pipeline_thread(session, config, on_complete):
 
     session.set_state(SessionState.ENCODING)
     tape["status"] = "encoding"
+
+    if not os.path.exists(raw_path) or os.path.getsize(raw_path) == 0:
+        tape["status"] = "failed"
+        tape["error"] = "Recording file missing or empty before encoding"
+        session.set_state(SessionState.ERROR)
+        session.complete_tape({"valid": False, "error": "Recording file missing or empty"})
+        if on_complete:
+            on_complete(session)
+        return
 
     success, err, size = encode_to_mp4(raw_path, final_path)
 
@@ -85,7 +95,7 @@ def _pipeline_thread(session, config, on_complete):
         tape["file"] = final_path
     else:
         tape["file"] = raw_path
-        tape["encode_error"] = err
+        tape["error"] = err
 
     session.set_state(SessionState.VALIDATING)
     tape["status"] = "validating"
