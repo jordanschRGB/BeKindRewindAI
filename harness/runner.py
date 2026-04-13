@@ -368,19 +368,12 @@ def step_apply_corrections(transcript, dream_result, vocabulary, feedback=None):
 
     corrections_applied = []
     corrected = transcript
+    corrected_words = set()
 
-    # Parse vocabulary into a lookup
     vocab_words = [w.strip() for w in vocabulary.split(",") if w.strip()]
 
-    # Use structured feedback to prioritize doubts. Feedback reasons are keyed
-    # by criterion (e.g., "accuracy": "2 names mangled"). When feedback is
-    # present, we extract any vocab-word hints from it and attempt those
-    # corrections first (prepended), then process remaining doubts normally.
     doubts = list(dream_result.get("doubts", []))
     if feedback:
-        # Collect criterion-level hints from feedback reasons.
-        # Any feedback reason that references a vocabulary word is treated as a
-        # high-priority doubt and moved to the front of the correction queue.
         feedback_hints = []
         for criterion, reason in feedback.items():
             if not reason:
@@ -390,26 +383,30 @@ def step_apply_corrections(transcript, dream_result, vocabulary, feedback=None):
                 if vocab_word.lower() in reason_lower and reason not in feedback_hints:
                     feedback_hints.append(reason)
                     break
-        # Deduplicate: prepend feedback hints, then add doubts not already covered
         existing_doubts_lower = {d.lower() for d in feedback_hints}
         remaining = [d for d in doubts if d.lower() not in existing_doubts_lower]
         doubts = feedback_hints + remaining
 
+    import re
+    timestamp_pattern = re.compile(r'^\d+\.\d+-\d+\.\d+:$')
+
     for doubt in doubts:
         doubt_lower = doubt.lower()
-        # Check if the doubt mentions a word that matches vocabulary
         for vocab_word in vocab_words:
             vl = vocab_word.lower()
-            # Look for "X might be Y" pattern
             if vl in doubt_lower and ("might be" in doubt_lower or "could be" in doubt_lower or "should be" in doubt_lower):
-                # Find the mangled version in the transcript
-                # Simple heuristic: look for words that are phonetically close
-                for transcript_word in corrected.split():
+                words = corrected.split()
+                for i, transcript_word in enumerate(words):
                     tw = transcript_word.strip(".,!?;:'\"").lower()
-                    # If the transcript word is similar-ish to the vocab word but not exact
+                    if tw in corrected_words:
+                        continue
+                    if timestamp_pattern.match(tw):
+                        continue
                     if tw != vl and _is_phonetically_close(tw, vl):
                         old = transcript_word.strip(".,!?;:'\"")
-                        corrected = corrected.replace(old, vocab_word)
+                        words[i] = vocab_word
+                        corrected = " ".join(words)
+                        corrected_words.add(tw)
                         corrections_applied.append(f"{old} → {vocab_word}")
                         break
 
@@ -417,7 +414,12 @@ def step_apply_corrections(transcript, dream_result, vocabulary, feedback=None):
 
 
 def _is_phonetically_close(a, b):
-    """Quick check if two words are phonetically similar. Not perfect, doesn't need to be."""
+    """Check if two words are phonetically similar with tightened matching.
+
+    Requires length similarity (diff <= 2) AND:
+    - first 4 chars match, OR
+    - full shorter word is substring of longer word
+    """
     import re
     a, b = a.lower(), b.lower()
     if a == b:
@@ -425,12 +427,13 @@ def _is_phonetically_close(a, b):
     timestamp_pattern = re.compile(r'^\d+\.\d+-\d+\.\d+:$')
     if timestamp_pattern.match(a) or timestamp_pattern.match(b):
         return False
-    if len(a) >= 3 and len(b) >= 3 and a[:3] == b[:3]:
+    if abs(len(a) - len(b)) > 2:
+        return False
+    if len(a) >= 4 and len(b) >= 4 and a[:4] == b[:4]:
         return True
-    if len(a) > 3 and len(b) > 3:
-        shorter, longer = (a, b) if len(a) < len(b) else (b, a)
-        if shorter in longer:
-            return True
+    shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+    if len(shorter) >= 3 and shorter in longer:
+        return True
     return False
 
 
