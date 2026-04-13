@@ -528,6 +528,8 @@ def run_pipeline(user_description, video_path):
         })
 
         if dream.get("pass", True):
+            if vocab:
+                final_dream["quality_verified"] = True
             break
 
         if iteration < MAX_ITERATIONS - 1:
@@ -540,16 +542,42 @@ def run_pipeline(user_description, video_path):
                 log("corrections", {"iteration": iteration + 1, "applied": corrections})
                 transcript = corrected_transcript
             else:
-                # No corrections possible — stop looping
-                log("corrections", {"iteration": iteration + 1, "applied": [], "note": "no actionable corrections"})
+                # No corrections possible — check if quality is acceptable
+                scores = dream.get("scores", {})
+                threshold_pass, failures = check_thresholds(scores)
+                if not threshold_pass:
+                    results["warning"] = (
+                        f"Transcript quality below threshold after {iteration + 1} rounds. "
+                        f"Failed criteria: {list(failures.keys())}. "
+                        f"Scores: {failures}. "
+                        f"Proceeding to labeling but quality is not verified."
+                    )
+                    log("corrections", {
+                        "iteration": iteration + 1,
+                        "applied": [],
+                        "note": "no actionable corrections",
+                        "warning": results["warning"],
+                    })
+                    final_dream["quality_verified"] = False
+                else:
+                    final_dream["quality_verified"] = True
                 break
         else:
             # Circuit breaker: max iterations reached
-            results["warning"] = f"Quality threshold not met after {MAX_ITERATIONS} rounds"
-            results["final_scores"] = dream.get("scores", {})
+            scores = dream.get("scores", {})
+            threshold_pass, failures = check_thresholds(scores)
+            results["warning"] = (
+                f"Quality threshold not met after {MAX_ITERATIONS} GAN iterations. "
+                f"Failed criteria: {list(failures.keys()) if failures else 'none'}. "
+                f"Scores: {failures if failures else scores}. "
+                f"Proceeding to labeling but quality is not verified."
+            )
+            results["final_scores"] = scores
+            final_dream["quality_verified"] = False
             log("circuit_breaker", {
                 "iteration": iteration + 1,
-                "scores": dream.get("scores", {}),
+                "scores": scores,
+                "failures": failures,
                 "consequence": dream.get("consequence", ""),
             })
 
@@ -582,6 +610,7 @@ def run_pipeline(user_description, video_path):
             "scores": final_dream.get("scores", {}),
             "pass": final_dream.get("pass", True),
             "consequence": final_dream.get("consequence", ""),
+            "quality_verified": final_dream.get("quality_verified", False),
         }
 
     return results
